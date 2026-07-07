@@ -47,6 +47,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   // 로그인 관련 상태
   const [showLogin, setShowLogin] = useState(false);
+  const [showAdminMenu, setShowAdminMenu] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -117,6 +118,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   async function handleLogout() {
     await fetch("/api/admin/logout", { method: "POST" });
+    setShowAdminMenu(false);
     router.refresh();
   }
 
@@ -185,10 +187,31 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             font-size: 12px;
           }
         }
+        .site-title-desktop {
+          display: block;
+        }
+        .site-title-mobile {
+          display: none;
+        }
+        @media (max-width: 640px) {
+          .site-title-desktop {
+            display: none;
+          }
+          .site-title-mobile {
+            display: block;
+          }
+        }
       `}</style>
 
-      {/* 상단 헤더: 식단 탭(중앙) + 관리자 로그인(우측) */}
-      <div style={{ position: "relative", marginBottom: 20, minHeight: 40 }}>
+      {/* 상단 헤더: 타이틀(좌) + 식단 탭(중앙) + 관리자 설정(우) */}
+      <div style={{ position: "relative", marginBottom: 20, minHeight: 44 }}>
+        <h1
+          className="site-title-desktop"
+          style={{ position: "absolute", top: 0, left: 0, ...titleStyle }}
+        >
+          환자 식단표
+        </h1>
+
         <div
           className="diet-tabs-desktop"
           style={{
@@ -225,57 +248,71 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           })}
         </div>
 
-        <div className="admin-login-desktop" style={{ position: "absolute", top: 4, right: 0 }}>
-          {isAdmin ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 13, color: "#2b6cb0", fontWeight: 600 }}>
-                관리자 모드
-              </span>
-              <button onClick={handleLogout} style={smallBtnStyle}>
-                로그아웃
-              </button>
-            </div>
-          ) : showLogin ? (
-            <form
-              onSubmit={handleLogin}
-              style={{ display: "flex", alignItems: "center", gap: 8 }}
+        <div
+          className="admin-login-desktop"
+          style={{ position: "absolute", top: 0, right: 0 }}
+        >
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <button
+              onClick={() =>
+                isAdmin ? setShowAdminMenu((v) => !v) : setShowLogin((v) => !v)
+              }
+              aria-label="관리자 설정"
+              style={gearBtnStyle(isAdmin)}
             >
-              <input
-                type="password"
-                autoFocus
-                value={passwordInput}
-                onChange={(e) => setPasswordInput(e.target.value)}
-                placeholder="관리자 비밀번호"
-                style={{
-                  padding: "6px 10px",
-                  border: "1px solid #d7dbe3",
-                  borderRadius: 6,
-                  fontSize: 13,
-                }}
-              />
-              <button type="submit" disabled={loading} style={smallBtnStyle}>
-                {loading ? "확인 중..." : "확인"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowLogin(false);
-                  setLoginError("");
-                  setPasswordInput("");
-                }}
-                style={smallBtnStyle}
-              >
-                취소
-              </button>
-              {loginError && (
-                <span style={{ fontSize: 12, color: "#e53e3e" }}>{loginError}</span>
-              )}
-            </form>
-          ) : (
-            <button onClick={() => setShowLogin(true)} style={smallBtnStyle}>
-              관리자 로그인
+              <GearIcon active={isAdmin} />
             </button>
-          )}
+
+            {isAdmin && showAdminMenu && (
+              <div style={popoverStyle}>
+                <span style={{ fontSize: 13, color: "#2b6cb0", fontWeight: 600 }}>
+                  관리자 모드
+                </span>
+                <button onClick={handleLogout} style={smallBtnStyle}>
+                  로그아웃
+                </button>
+              </div>
+            )}
+
+            {!isAdmin && showLogin && (
+              <form onSubmit={handleLogin} style={popoverFormStyle}>
+                <input
+                  type="password"
+                  autoFocus
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  placeholder="관리자 비밀번호"
+                  style={{
+                    padding: "6px 10px",
+                    border: "1px solid #d7dbe3",
+                    borderRadius: 6,
+                    fontSize: 13,
+                    width: "100%",
+                    boxSizing: "border-box",
+                  }}
+                />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="submit" disabled={loading} style={smallBtnStyle}>
+                    {loading ? "확인 중..." : "확인"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowLogin(false);
+                      setLoginError("");
+                      setPasswordInput("");
+                    }}
+                    style={smallBtnStyle}
+                  >
+                    취소
+                  </button>
+                </div>
+                {loginError && (
+                  <span style={{ fontSize: 12, color: "#e53e3e" }}>{loginError}</span>
+                )}
+              </form>
+            )}
+          </div>
         </div>
       </div>
 
@@ -318,61 +355,76 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         })}
       </div>
 
-      {/* 관리자 로그인 - 모바일 전용(하단 탭바와 겹치지 않게 상단에 별도 표시) */}
+      {/* 타이틀 + 관리자 설정 - 모바일 전용 */}
       <div
         className="admin-login-mobile"
-        style={{ justifyContent: "flex-end", marginBottom: 12 }}
+        style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}
       >
-        {isAdmin ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 13, color: "#2b6cb0", fontWeight: 600 }}>
-              관리자 모드
-            </span>
-            <button onClick={handleLogout} style={smallBtnStyle}>
-              로그아웃
-            </button>
-          </div>
-        ) : showLogin ? (
-          <form
-            onSubmit={handleLogin}
-            style={{ display: "flex", alignItems: "center", gap: 8 }}
+        <h1 className="site-title-mobile" style={titleStyleMobile}>
+          환자 식단표
+        </h1>
+
+        <div style={{ position: "relative", display: "inline-block" }}>
+          <button
+            onClick={() =>
+              isAdmin ? setShowAdminMenu((v) => !v) : setShowLogin((v) => !v)
+            }
+            aria-label="관리자 설정"
+            style={gearBtnStyle(isAdmin)}
           >
-            <input
-              type="password"
-              autoFocus
-              value={passwordInput}
-              onChange={(e) => setPasswordInput(e.target.value)}
-              placeholder="관리자 비밀번호"
-              style={{
-                padding: "6px 10px",
-                border: "1px solid #d7dbe3",
-                borderRadius: 6,
-                fontSize: 13,
-              }}
-            />
-            <button type="submit" disabled={loading} style={smallBtnStyle}>
-              {loading ? "확인 중..." : "확인"}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowLogin(false);
-                setLoginError("");
-                setPasswordInput("");
-              }}
-              style={smallBtnStyle}
-            >
-              취소
-            </button>
-            {loginError && (
-              <span style={{ fontSize: 12, color: "#e53e3e" }}>{loginError}</span>
-            )}
-          </form>
-        ) : (
-          <button onClick={() => setShowLogin(true)} style={smallBtnStyle}>
-            관리자 로그인
+            <GearIcon active={isAdmin} />
           </button>
-        )}
+
+          {isAdmin && showAdminMenu && (
+            <div style={popoverStyle}>
+              <span style={{ fontSize: 13, color: "#2b6cb0", fontWeight: 600 }}>
+                관리자 모드
+              </span>
+              <button onClick={handleLogout} style={smallBtnStyle}>
+                로그아웃
+              </button>
+            </div>
+          )}
+
+          {!isAdmin && showLogin && (
+            <form onSubmit={handleLogin} style={popoverFormStyle}>
+              <input
+                type="password"
+                autoFocus
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                placeholder="관리자 비밀번호"
+                style={{
+                  padding: "6px 10px",
+                  border: "1px solid #d7dbe3",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  width: "100%",
+                  boxSizing: "border-box",
+                }}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="submit" disabled={loading} style={smallBtnStyle}>
+                  {loading ? "확인 중..." : "확인"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowLogin(false);
+                    setLoginError("");
+                    setPasswordInput("");
+                  }}
+                  style={smallBtnStyle}
+                >
+                  취소
+                </button>
+              </div>
+              {loginError && (
+                <span style={{ fontSize: 12, color: "#e53e3e" }}>{loginError}</span>
+              )}
+            </form>
+          )}
+        </div>
       </div>
 
       {/* 주간 네비게이션 */}
@@ -612,6 +664,87 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     </div>
   );
 }
+
+function GearIcon({ active }: { active?: boolean }) {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={active ? "#2b6cb0" : "#4a5568"}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function gearBtnStyle(active: boolean): CSSProperties {
+  return {
+    width: 36,
+    height: 36,
+    borderRadius: "50%",
+    border: active ? "1px solid #2b6cb0" : "1px solid #e2e5ea",
+    background: active ? "#ebf4ff" : "#fff",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  };
+}
+
+const titleStyle: CSSProperties = {
+  fontSize: 26,
+  fontWeight: 800,
+  color: "#1f2430",
+  margin: 0,
+  letterSpacing: "-0.02em",
+};
+
+const titleStyleMobile: CSSProperties = {
+  fontSize: 20,
+  fontWeight: 800,
+  color: "#1f2430",
+  margin: 0,
+  letterSpacing: "-0.02em",
+};
+
+const popoverStyle: CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 8px)",
+  right: 0,
+  background: "#fff",
+  border: "1px solid #e2e5ea",
+  borderRadius: 10,
+  padding: "10px 12px",
+  boxShadow: "0 4px 16px rgba(0,0,0,0.1)",
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  whiteSpace: "nowrap",
+  zIndex: 30,
+};
+
+const popoverFormStyle: CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 8px)",
+  right: 0,
+  background: "#fff",
+  border: "1px solid #e2e5ea",
+  borderRadius: 10,
+  padding: 12,
+  boxShadow: "0 4px 16px rgba(0,0,0,0.1)",
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  minWidth: 200,
+  zIndex: 30,
+};
 
 const navBtnStyle: CSSProperties = {
   width: 36,
