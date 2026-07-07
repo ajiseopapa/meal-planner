@@ -129,6 +129,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         .diet-tabs-mobile {
           display: none;
         }
+        .admin-login-mobile {
+          display: none;
+        }
         @media (max-width: 640px) {
           .diet-tabs-desktop {
             display: none;
@@ -136,45 +139,105 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           .diet-tabs-mobile {
             display: flex;
           }
+          .admin-login-desktop {
+            display: none;
+          }
+          .admin-login-mobile {
+            display: flex;
+          }
         }
       `}</style>
 
-      {/* 식단 종류 탭 - PC: 상단 가로 탭 */}
-      <div
-        className="diet-tabs-desktop"
-        style={{
-          gap: 6,
-          marginBottom: 20,
-          justifyContent: "center",
-          background: "#f0f2f5",
-          borderRadius: 10,
-          padding: 4,
-          width: "fit-content",
-          margin: "0 auto 20px",
-        }}
-      >
-        {DIET_TYPES.map((diet) => {
-          const active = diet === selectedDiet;
-          return (
-            <button
-              key={diet}
-              onClick={() => setSelectedDiet(diet)}
-              style={{
-                border: "none",
-                borderRadius: 8,
-                padding: "8px 18px",
-                fontSize: 14,
-                fontWeight: active ? 600 : 400,
-                cursor: "pointer",
-                background: active ? "#fff" : "transparent",
-                color: active ? "#2b6cb0" : "#4a5568",
-                boxShadow: active ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
-              }}
+      {/* 상단 헤더: 식단 탭(중앙) + 관리자 로그인(우측) */}
+      <div style={{ position: "relative", marginBottom: 20, minHeight: 40 }}>
+        <div
+          className="diet-tabs-desktop"
+          style={{
+            gap: 6,
+            justifyContent: "center",
+            background: "#f0f2f5",
+            borderRadius: 10,
+            padding: 4,
+            width: "fit-content",
+            margin: "0 auto",
+          }}
+        >
+          {DIET_TYPES.map((diet) => {
+            const active = diet === selectedDiet;
+            return (
+              <button
+                key={diet}
+                onClick={() => setSelectedDiet(diet)}
+                style={{
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "8px 18px",
+                  fontSize: 14,
+                  fontWeight: active ? 600 : 400,
+                  cursor: "pointer",
+                  background: active ? "#fff" : "transparent",
+                  color: active ? "#2b6cb0" : "#4a5568",
+                  boxShadow: active ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                }}
+              >
+                {diet}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="admin-login-desktop" style={{ position: "absolute", top: 4, right: 0 }}>
+          {isAdmin ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 13, color: "#2b6cb0", fontWeight: 600 }}>
+                관리자 모드
+              </span>
+              <button onClick={handleLogout} style={smallBtnStyle}>
+                로그아웃
+              </button>
+            </div>
+          ) : showLogin ? (
+            <form
+              onSubmit={handleLogin}
+              style={{ display: "flex", alignItems: "center", gap: 8 }}
             >
-              {diet}
+              <input
+                type="password"
+                autoFocus
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                placeholder="관리자 비밀번호"
+                style={{
+                  padding: "6px 10px",
+                  border: "1px solid #d7dbe3",
+                  borderRadius: 6,
+                  fontSize: 13,
+                }}
+              />
+              <button type="submit" disabled={loading} style={smallBtnStyle}>
+                {loading ? "확인 중..." : "확인"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLogin(false);
+                  setLoginError("");
+                  setPasswordInput("");
+                }}
+                style={smallBtnStyle}
+              >
+                취소
+              </button>
+              {loginError && (
+                <span style={{ fontSize: 12, color: "#e53e3e" }}>{loginError}</span>
+              )}
+            </form>
+          ) : (
+            <button onClick={() => setShowLogin(true)} style={smallBtnStyle}>
+              관리자 로그인
             </button>
-          );
-        })}
+          )}
+        </div>
       </div>
 
       {/* 식단 종류 탭 - 모바일: 하단 고정 탭바 */}
@@ -216,8 +279,11 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         })}
       </div>
 
-      {/* 관리자 로그인/로그아웃 */}
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+      {/* 관리자 로그인 - 모바일 전용(하단 탭바와 겹치지 않게 상단에 별도 표시) */}
+      <div
+        className="admin-login-mobile"
+        style={{ justifyContent: "flex-end", marginBottom: 12 }}
+      >
         {isAdmin ? (
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 13, color: "#2b6cb0", fontWeight: 600 }}>
