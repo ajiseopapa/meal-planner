@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, type CSSProperties } from "react";
+import { useState, useRef, type CSSProperties, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
+import * as XLSX from "xlsx";
 
 const MEAL_TYPES = ["조식", "중식", "석식", "간식"];
 const CATEGORIES = ["밥", "국", "반찬A", "반찬B", "반찬C", "반찬D"];
@@ -35,6 +36,10 @@ function dateKey(d: Date) {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
+function buildKey(d: Date, diet: string, mealType: string, category: string) {
+  return `${dateKey(d)}__${diet}__${mealType}__${category}`;
+}
+
 export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   const router = useRouter();
   const today = new Date();
@@ -51,6 +56,13 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   const [passwordInput, setPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // 엑셀 업로드 관련 상태
+  const [excelBusy, setExcelBusy] = useState(false);
+  const [excelResult, setExcelResult] = useState<{ success: number; errors: string[] } | null>(
+    null
+  );
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(weekStart);
@@ -76,7 +88,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   }
 
   function cellKey(mealType: string, category: string) {
-    return `${dateKey(selectedDate)}__${selectedDiet}__${mealType}__${category}`;
+    return buildKey(selectedDate, selectedDiet, mealType, category);
   }
 
   function startEdit(mealType: string, category: string) {
@@ -120,6 +132,131 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     await fetch("/api/admin/logout", { method: "POST" });
     setShowAdminMenu(false);
     router.refresh();
+  }
+
+  // 이번 주 전체(모든 식단 종류) 데이터를 다음 주 같은 요일로 그대로 복사
+  function copyWeekToNextWeek() {
+    setData((prev) => {
+      const next = { ...prev };
+      for (let i = 0; i < 7; i++) {
+        const sourceDate = new Date(weekStart);
+        sourceDate.setDate(weekStart.getDate() + i);
+        const targetDate = new Date(sourceDate);
+        targetDate.setDate(sourceDate.getDate() + 7);
+
+        for (const diet of DIET_TYPES) {
+          for (const mealType of MEAL_TYPES) {
+            for (const category of CATEGORIES) {
+              const value = prev[buildKey(sourceDate, diet, mealType, category)];
+              if (value) {
+                next[buildKey(targetDate, diet, mealType, category)] = value;
+              }
+            }
+          }
+        }
+      }
+      return next;
+    });
+  }
+
+  function handleCopyWeek() {
+    const nextWeekStart = new Date(weekStart);
+    nextWeekStart.setDate(weekStart.getDate() + 7);
+    const nextWeekEnd = new Date(nextWeekStart);
+    nextWeekEnd.setDate(nextWeekStart.getDate() + 6);
+
+    const ok = window.confirm(
+      `이번 주(${formatDate(weekStart)} ~ ${formatDate(weekEnd)}) 식단을 다음 주(${formatDate(
+        nextWeekStart
+      )} ~ ${formatDate(nextWeekEnd)})로 그대로 복사할까요?\n다음 주에 이미 등록된 메뉴는 덮어씌워집니다.`
+    );
+    if (!ok) return;
+    copyWeekToNextWeek();
+  }
+
+  // 엑셀 업로드 처리: 헤더 [날짜, 식단, 끼니, 카테고리, 메뉴]
+  async function handleExcelUpload(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setExcelBusy(true);
+    setExcelResult(null);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { cellDates: true });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      const errors: string[] = [];
+      const updates: Record<string, string> = {};
+      let success = 0;
+
+      rows.forEach((row, idx) => {
+        const rowNum = idx + 2; // 1행은 헤더
+        const rawDate = row["날짜"];
+        const diet = String(row["식단"] ?? "").trim();
+        const mealType = String(row["끼니"] ?? "").trim();
+        const category = String(row["카테고리"] ?? "").trim();
+        const menu = String(row["메뉴"] ?? "").trim();
+
+        let parsedDate: Date | null = null;
+        if (rawDate instanceof Date && !isNaN(rawDate.getTime())) {
+          parsedDate = rawDate;
+        } else if (typeof rawDate === "string" && rawDate.trim()) {
+          const normalized = rawDate.trim().replace(/\./g, "-").replace(/\//g, "-");
+          const d = new Date(normalized);
+          if (!isNaN(d.getTime())) parsedDate = d;
+        } else if (typeof rawDate === "number") {
+          // 엑셀 시리얼 날짜값 대비
+          const parsed = XLSX.SSF?.parse_date_code?.(rawDate);
+          if (parsed) parsedDate = new Date(parsed.y, parsed.m - 1, parsed.d);
+        }
+
+        if (!parsedDate) {
+          errors.push(`${rowNum}행: 날짜를 인식할 수 없습니다 (${String(rawDate)})`);
+          return;
+        }
+        if (!DIET_TYPES.includes(diet)) {
+          errors.push(`${rowNum}행: 식단 종류가 올바르지 않습니다 (${diet || "비어있음"})`);
+          return;
+        }
+        if (!MEAL_TYPES.includes(mealType)) {
+          errors.push(`${rowNum}행: 끼니가 올바르지 않습니다 (${mealType || "비어있음"})`);
+          return;
+        }
+        if (!CATEGORIES.includes(category)) {
+          errors.push(`${rowNum}행: 카테고리가 올바르지 않습니다 (${category || "비어있음"})`);
+          return;
+        }
+        if (!menu) {
+          errors.push(`${rowNum}행: 메뉴명이 비어있습니다`);
+          return;
+        }
+
+        updates[buildKey(parsedDate, diet, mealType, category)] = menu;
+        success++;
+      });
+
+      setData((prev) => ({ ...prev, ...updates }));
+      setExcelResult({ success, errors: errors.slice(0, 10) });
+    } catch {
+      setExcelResult({
+        success: 0,
+        errors: ["파일을 읽는 중 오류가 발생했습니다. 양식을 확인해주세요."],
+      });
+    } finally {
+      setExcelBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function downloadTemplate() {
+    const header = ["날짜", "식단", "끼니", "카테고리", "메뉴"];
+    const example = ["2026-07-06", "일반식", "조식", "밥", "현미밥"];
+    const ws = XLSX.utils.aoa_to_sheet([header, example]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "식단");
+    XLSX.writeFile(wb, "식단표_업로드양식.xlsx");
   }
 
   return (
@@ -472,6 +609,70 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         </button>
       </div>
 
+      {/* 관리자 전용 툴바: 주간 복사 / 엑셀 업로드 */}
+      {isAdmin && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            justifyContent: "center",
+            marginBottom: 16,
+          }}
+        >
+          <button onClick={handleCopyWeek} style={toolbarBtnStyle}>
+            이번 주 → 다음 주 복사
+          </button>
+          <button onClick={downloadTemplate} style={toolbarBtnStyle}>
+            엑셀 양식 다운로드
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={toolbarBtnStyle}
+            disabled={excelBusy}
+          >
+            {excelBusy ? "업로드 중..." : "엑셀로 일괄 등록"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            onChange={handleExcelUpload}
+            style={{ display: "none" }}
+          />
+        </div>
+      )}
+
+      {excelResult && (
+        <div
+          style={{
+            ...resultBoxStyle,
+            borderColor: excelResult.errors.length > 0 ? "#e53e3e" : "#2b6cb0",
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: excelResult.errors.length ? 6 : 0 }}>
+            엑셀 업로드 결과: 성공 {excelResult.success}건
+            {excelResult.errors.length > 0 &&
+              ` · 오류 ${excelResult.errors.length}건${
+                excelResult.errors.length >= 10 ? "+" : ""
+              }`}
+          </div>
+          {excelResult.errors.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#e53e3e" }}>
+              {excelResult.errors.map((err, i) => (
+                <li key={i}>{err}</li>
+              ))}
+            </ul>
+          )}
+          <button
+            onClick={() => setExcelResult(null)}
+            style={{ ...smallBtnStyle, marginTop: 8 }}
+          >
+            닫기
+          </button>
+        </div>
+      )}
+
       {/* 요일 탭 */}
       <div
         className="day-tabs-row"
@@ -768,6 +969,26 @@ const popoverFormStyle: CSSProperties = {
   gap: 8,
   minWidth: 200,
   zIndex: 30,
+};
+
+const toolbarBtnStyle: CSSProperties = {
+  border: "1px solid #d7dbe3",
+  background: "#fff",
+  borderRadius: 8,
+  padding: "8px 14px",
+  cursor: "pointer",
+  fontSize: 13,
+  color: "#1f2430",
+  fontWeight: 500,
+};
+
+const resultBoxStyle: CSSProperties = {
+  border: "1px solid #e2e5ea",
+  borderRadius: 10,
+  padding: 12,
+  marginBottom: 16,
+  background: "#f9fafb",
+  fontSize: 13,
 };
 
 const navBtnStyle: CSSProperties = {
