@@ -121,7 +121,16 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   }
 
   return (
-    <div style={{ maxWidth: 960, margin: "40px auto", padding: "0 16px 96px" }}>
+    <div style={{ maxWidth: 960, margin: "40px auto", padding: "0 16px 96px", width: "100%", boxSizing: "border-box" }}>
+      <style jsx global>{`
+        html, body {
+          overflow-x: hidden;
+          max-width: 100%;
+        }
+        *, *::before, *::after {
+          box-sizing: border-box;
+        }
+      `}</style>
       <style jsx>{`
         .diet-tabs-desktop {
           display: flex;
@@ -131,6 +140,19 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         }
         .admin-login-mobile {
           display: none;
+        }
+        .meal-table-desktop {
+          display: block;
+        }
+        .meal-list-mobile {
+          display: none;
+        }
+        .week-nav {
+          gap: 20px;
+        }
+        .week-nav-label {
+          font-size: 16px;
+          white-space: nowrap;
         }
         @media (max-width: 640px) {
           .diet-tabs-desktop {
@@ -144,6 +166,23 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           }
           .admin-login-mobile {
             display: flex;
+          }
+          .meal-table-desktop {
+            display: none;
+          }
+          .meal-list-mobile {
+            display: block;
+          }
+          .week-nav {
+            gap: 8px;
+          }
+          .week-nav-label {
+            font-size: 14px;
+          }
+        }
+        @media (max-width: 360px) {
+          .week-nav-label {
+            font-size: 12px;
           }
         }
       `}</style>
@@ -338,21 +377,22 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
       {/* 주간 네비게이션 */}
       <div
+        className="week-nav"
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          gap: 20,
           marginBottom: 24,
+          maxWidth: "100%",
         }}
       >
-        <button onClick={goPrevWeek} aria-label="이전 주" style={navBtnStyle}>
+        <button onClick={goPrevWeek} aria-label="이전 주" style={{ ...navBtnStyle, flexShrink: 0 }}>
           ◀
         </button>
-        <button onClick={goToday} style={dateBtnStyle}>
+        <button onClick={goToday} className="week-nav-label" style={{ ...dateBtnStyle, fontSize: undefined }}>
           {formatDate(weekStart)} ~ {formatDate(weekEnd)}
         </button>
-        <button onClick={goNextWeek} aria-label="다음 주" style={navBtnStyle}>
+        <button onClick={goNextWeek} aria-label="다음 주" style={{ ...navBtnStyle, flexShrink: 0 }}>
           ▶
         </button>
       </div>
@@ -411,8 +451,8 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         })}
       </div>
 
-      {/* 표 */}
-      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+      {/* 표 - PC 전용 */}
+      <div className="meal-table-desktop" style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
       <table style={{ width: "100%", minWidth: 560, borderCollapse: "collapse", fontSize: 14 }}>
         <thead>
           <tr>
@@ -483,6 +523,91 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           ))}
         </tbody>
       </table>
+      </div>
+
+      {/* 식단표 - 모바일 전용 세로 카드 리스트 */}
+      <div className="meal-list-mobile">
+        {MEAL_TYPES.map((mealType) => (
+          <div key={mealType} style={{ marginBottom: 18 }}>
+            <div style={{ fontWeight: 600, fontSize: 15, color: "#1f2430", marginBottom: 8 }}>
+              {mealType}
+            </div>
+            <div
+              style={{
+                border: "1px solid #e2e5ea",
+                borderRadius: 10,
+                overflow: "hidden",
+                background: "#fff",
+              }}
+            >
+              {CATEGORIES.map((category, idx) => {
+                const key = cellKey(mealType, category);
+                const value = data[key];
+                const isEditing = editingKey === key;
+                return (
+                  <div
+                    key={category}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: "10px 12px",
+                      borderTop: idx === 0 ? "none" : "1px solid #f0f2f5",
+                    }}
+                  >
+                    <span style={{ fontSize: 13, color: "#8a93a3", flexShrink: 0, minWidth: 56 }}>
+                      {category}
+                    </span>
+                    <div style={{ flex: 1, textAlign: "right" }}>
+                      {isEditing ? (
+                        <input
+                          autoFocus
+                          value={draft}
+                          onChange={(e) => setDraft(e.target.value)}
+                          onBlur={() => saveEdit(key)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveEdit(key);
+                            if (e.key === "Escape") setEditingKey(null);
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            border: "1px solid #2b6cb0",
+                            borderRadius: 6,
+                            fontSize: 13,
+                            boxSizing: "border-box",
+                            textAlign: "right",
+                          }}
+                        />
+                      ) : value ? (
+                        isAdmin ? (
+                          <button
+                            onClick={() => startEdit(mealType, category)}
+                            style={{ ...valueBtnStyle, width: "auto" }}
+                          >
+                            {value}
+                          </button>
+                        ) : (
+                          <span style={valueTextStyle}>{value}</span>
+                        )
+                      ) : isAdmin ? (
+                        <button
+                          onClick={() => startEdit(mealType, category)}
+                          style={registerBtnStyle}
+                        >
+                          등록
+                        </button>
+                      ) : (
+                        <span style={emptyTextStyle}>-</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
