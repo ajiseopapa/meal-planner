@@ -3,7 +3,7 @@
 import { useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 
-const MEAL_TYPES = ["일반식", "CA식", "당뇨식", "항암식"];
+const MEAL_TYPES = ["조식", "중식", "석식", "간식"];
 const CATEGORIES = ["밥", "국", "반찬A", "반찬B", "반찬C", "반찬D"];
 const DAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
 
@@ -43,7 +43,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
 
-  // 로그인 폼 상태
+  // 로그인 관련 상태
   const [showLogin, setShowLogin] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -105,7 +105,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       }
       setShowLogin(false);
       setPasswordInput("");
-      router.refresh(); // 서버 컴포넌트가 쿠키 다시 읽도록
+      router.refresh(); // 서버 컴포넌트가 쿠키를 다시 읽도록
     } catch {
       setLoginError("네트워크 오류가 발생했습니다.");
     } finally {
@@ -174,7 +174,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         )}
       </div>
 
-      {/* 주간 네비게이터 */}
+      {/* 주간 네비게이션 */}
       <div
         style={{
           display: "flex",
@@ -185,13 +185,13 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         }}
       >
         <button onClick={goPrevWeek} aria-label="이전 주" style={navBtnStyle}>
-          ‹
+          ◀
         </button>
         <button onClick={goToday} style={dateBtnStyle}>
           {formatDate(weekStart)} ~ {formatDate(weekEnd)}
         </button>
         <button onClick={goNextWeek} aria-label="다음 주" style={navBtnStyle}>
-          ›
+          ▶
         </button>
       </div>
 
@@ -355,41 +355,33 @@ const tdStyle: CSSProperties = {
   border: "1px solid #e2e5ea",
   padding: "8px",
   textAlign: "center",
-  minWidth: 90,
-};
-
-const registerBtnStyle: CSSProperties = {
-  border: "1px dashed #b7c0cc",
-  background: "#fff",
-  color: "#8a93a3",
-  borderRadius: 6,
-  padding: "6px 10px",
-  cursor: "pointer",
-  fontSize: 13,
-  width: "100%",
 };
 
 const valueBtnStyle: CSSProperties = {
-  border: "1px solid #d7dbe3",
-  background: "#fafbfc",
-  borderRadius: 6,
-  padding: "6px 10px",
+  border: "none",
+  background: "transparent",
   cursor: "pointer",
   fontSize: 13,
-  width: "100%",
   color: "#1f2430",
+  width: "100%",
 };
 
 const valueTextStyle: CSSProperties = {
-  display: "inline-block",
-  padding: "6px 10px",
   fontSize: 13,
   color: "#1f2430",
 };
 
+const registerBtnStyle: CSSProperties = {
+  border: "1px dashed #c3cad6",
+  background: "transparent",
+  cursor: "pointer",
+  fontSize: 12,
+  color: "#8a93a3",
+  borderRadius: 6,
+  padding: "4px 10px",
+};
+
 const emptyTextStyle: CSSProperties = {
-  display: "inline-block",
-  padding: "6px 10px",
   fontSize: 13,
-  color: "#c3c9d3",
+  color: "#c3cad6",
 };
