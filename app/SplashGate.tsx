@@ -46,10 +46,12 @@ export default function SplashGate({ children }: { children: React.ReactNode }) 
               세계로병원 환자식 메뉴 안내
             </h1>
             <svg
-              width="56"
-              height="56"
               viewBox="0 0 100 100"
-              style={{ animation: 'splash-float 1.6s ease-in-out infinite' }}
+              style={{
+                width: 'min(70vw, 320px)',
+                height: 'min(70vw, 320px)',
+                animation: 'splash-float 1.6s ease-in-out infinite',
+              }}
             >
               <path d="M15 50 Q15 82 50 88 Q85 82 85 50 Z" fill="#d97a52" stroke="#b85c3a" strokeWidth="2" />
               <ellipse cx="50" cy="50" rx="36" ry="9" fill="#f2a97a" stroke="#b85c3a" strokeWidth="2" />
