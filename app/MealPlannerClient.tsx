@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useRef, type CSSProperties, type ChangeEvent } from "react";
+import { useState, useRef, useEffect, type CSSProperties, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
+import { db } from "@/lib/firebase";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 
 const MEAL_TYPES = ["조식", "중식", "석식", "간식"];
 const CATEGORIES = ["밥", "국", "반찬A", "반찬B", "반찬C", "반찬D"];
@@ -36,8 +38,60 @@ function dateKey(d: Date) {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
+// Firestore 조회용 (문자열 정렬이 실제 날짜 순서와 일치해야 해서 0으로 자리를 채움)
+function toISODate(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
+
 function buildKey(d: Date, diet: string, mealType: string, category: string) {
   return `${dateKey(d)}__${diet}__${mealType}__${category}`;
+}
+
+type MealUpdate = {
+  key: string;
+  date: Date;
+  diet: string;
+  mealType: string;
+  category: string;
+  value: string;
+};
+
+// 여러 칸을 한 번에 저장 — 서버 라우트(/api/admin/meals)를 거쳐서 저장함
+// (관리자 쿠키 검증은 서버에서 하고, 실제 Firestore 쓰기는 firebase-admin이 담당)
+async function commitMealUpdates(updates: MealUpdate[]) {
+  const res = await fetch("/api/admin/meals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      updates: updates.map((u) => ({
+        key: u.key,
+        date: toISODate(u.date),
+        diet: u.diet,
+        mealType: u.mealType,
+        category: u.category,
+        value: u.value,
+      })),
+    }),
+  });
+  if (!res.ok) {
+    const message = await res.text().catch(() => "");
+    console.error("식단 저장에 실패했습니다.", message);
+    window.alert("식단 저장에 실패했습니다. 다시 시도해주세요.");
+  }
+}
+
+// 한 칸만 저장할 때 쓰는 편의 함수
+async function persistMealDoc(
+  key: string,
+  d: Date,
+  diet: string,
+  mealType: string,
+  category: string,
+  value: string
+) {
+  await commitMealUpdates([{ key, date: d, diet, mealType, category, value }]);
 }
 
 export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
@@ -67,6 +121,54 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   // 빈칸 일괄 입력 모드 관련 상태 (기존 등록 기능과는 완전히 별도)
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkDraft, setBulkDraft] = useState<Record<string, string>>({});
+
+  // Firestore 실시간 구독: 현재 보고 있는 주간(월~일) 범위만 구독
+  const [syncing, setSyncing] = useState(true);
+  useEffect(() => {
+    setSyncing(true);
+    const startISO = toISODate(weekStart);
+    const weekEndForQuery = new Date(weekStart);
+    weekEndForQuery.setDate(weekStart.getDate() + 6);
+    const endISO = toISODate(weekEndForQuery);
+
+    const q = query(
+      collection(db, "meals"),
+      where("date", ">=", startISO),
+      where("date", "<=", endISO)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const weekMap: Record<string, string> = {};
+        snapshot.forEach((docSnap) => {
+          const value = docSnap.data().value;
+          if (typeof value === "string") weekMap[docSnap.id] = value;
+        });
+
+        setData((prev) => {
+          const next = { ...prev };
+          for (let i = 0; i < 7; i++) {
+            const d = new Date(weekStart);
+            d.setDate(weekStart.getDate() + i);
+            for (const diet of DIET_TYPES) {
+              for (const mealType of MEAL_TYPES) {
+                for (const category of CATEGORIES) {
+                  const key = buildKey(d, diet, mealType, category);
+                  next[key] = weekMap[key] ?? "";
+                }
+              }
+            }
+          }
+          return next;
+        });
+        setSyncing(false);
+      },
+      () => setSyncing(false)
+    );
+
+    return () => unsubscribe();
+  }, [weekStart]);
 
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(weekStart);
@@ -140,6 +242,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   // 이번 주 전체(모든 식단 종류) 데이터를 다음 주 같은 요일로 그대로 복사
   function copyWeekToNextWeek() {
+    const firestoreUpdates: MealUpdate[] = [];
     setData((prev) => {
       const next = { ...prev };
       for (let i = 0; i < 7; i++) {
@@ -153,7 +256,16 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             for (const category of CATEGORIES) {
               const value = prev[buildKey(sourceDate, diet, mealType, category)];
               if (value) {
-                next[buildKey(targetDate, diet, mealType, category)] = value;
+                const targetKey = buildKey(targetDate, diet, mealType, category);
+                next[targetKey] = value;
+                firestoreUpdates.push({
+                  key: targetKey,
+                  date: targetDate,
+                  diet,
+                  mealType,
+                  category,
+                  value,
+                });
               }
             }
           }
@@ -161,6 +273,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       }
       return next;
     });
+    if (firestoreUpdates.length > 0) {
+      void commitMealUpdates(firestoreUpdates);
+    }
   }
 
   function handleCopyWeek() {
@@ -193,6 +308,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
       const errors: string[] = [];
       const updates: Record<string, string> = {};
+      const firestoreUpdates: MealUpdate[] = [];
       let success = 0;
 
       rows.forEach((row, idx) => {
@@ -238,10 +354,21 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         }
 
         updates[buildKey(parsedDate, diet, mealType, category)] = menu;
+        firestoreUpdates.push({
+          key: buildKey(parsedDate, diet, mealType, category),
+          date: parsedDate,
+          diet,
+          mealType,
+          category,
+          value: menu,
+        });
         success++;
       });
 
       setData((prev) => ({ ...prev, ...updates }));
+      if (firestoreUpdates.length > 0) {
+        await commitMealUpdates(firestoreUpdates);
+      }
       setExcelResult({ success, errors: errors.slice(0, 10) });
     } catch {
       setExcelResult({
@@ -302,9 +429,24 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   }
 
   function saveBulkDraft() {
-    setData((prev) => ({ ...prev, ...bulkDraft }));
-    setBulkMode(false);
+  const updates: MealUpdate[] = [];
+  const changedMap: Record<string, string> = {};
+  for (const mealType of MEAL_TYPES) {
+    for (const category of CATEGORIES) {
+      const key = cellKey(mealType, category);
+      const nextValue = bulkDraft[key] ?? "";
+      if (nextValue !== (data[key] ?? "")) {
+        updates.push({ key, date: selectedDate, diet: selectedDiet, mealType, category, value: nextValue });
+        changedMap[key] = nextValue;
+      }
+    }
   }
+  setData((prev) => ({ ...prev, ...changedMap })); // 바뀐 24칸 중 실제로 바뀐 것만
+  setBulkMode(false);
+  if (updates.length > 0) {
+    void commitMealUpdates(updates);
+  }
+}
 
   function revertBulkDraft() {
     setBulkDraft({ ...data });
@@ -865,9 +1007,15 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                         autoFocus
                         value={draft}
                         onChange={(e) => setDraft(e.target.value)}
-                        onBlur={() => saveEdit(key)}
+                        onBlur={() => {
+                          saveEdit(key);
+                          void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, draft);
+                        }}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") saveEdit(key);
+                          if (e.key === "Enter") {
+                            saveEdit(key);
+                            void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, draft);
+                          }
                           if (e.key === "Escape") setEditingKey(null);
                         }}
                         style={{
@@ -949,9 +1097,15 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                           autoFocus
                           value={draft}
                           onChange={(e) => setDraft(e.target.value)}
-                          onBlur={() => saveEdit(key)}
+                          onBlur={() => {
+                            saveEdit(key);
+                            void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, draft);
+                          }}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") saveEdit(key);
+                            if (e.key === "Enter") {
+                              saveEdit(key);
+                              void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, draft);
+                            }
                             if (e.key === "Escape") setEditingKey(null);
                           }}
                           style={{
