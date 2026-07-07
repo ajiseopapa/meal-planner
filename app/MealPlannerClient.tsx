@@ -38,11 +38,9 @@ function dateKey(d: Date) {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-// Firestore 조회용 (문자열 정렬이 실제 날짜 순서와 일치해야 해서 0으로 자리를 채움)
 function toISODate(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate()
-  ).padStart(2, "0")}`;
+  // padStart(2, "0")을 제거하여 2026-7-7 형식이 되도록 변경
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
 function buildKey(d: Date, diet: string, mealType: string, category: string) {
