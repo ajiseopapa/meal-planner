@@ -64,6 +64,10 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // 빈칸 일괄 입력 모드 관련 상태 (기존 등록 기능과는 완전히 별도)
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkDraft, setBulkDraft] = useState<Record<string, string>>({});
+
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(weekStart);
     d.setDate(weekStart.getDate() + i);
@@ -257,6 +261,53 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "식단");
     XLSX.writeFile(wb, "식단표_업로드양식.xlsx");
+  }
+
+  // ── 빈칸 일괄 입력 모드 (기존 등록/수정 로직은 건드리지 않고 별도로 얹음) ──
+  // 현재 화면(선택된 날짜 x 선택된 식단)에 보이는 24칸만 대상으로 함
+  function currentViewKeys() {
+    const keys: string[] = [];
+    for (const mealType of MEAL_TYPES) {
+      for (const category of CATEGORIES) {
+        keys.push(cellKey(mealType, category));
+      }
+    }
+    return keys;
+  }
+
+  function bulkDirtyCount() {
+    return currentViewKeys().filter((key) => (bulkDraft[key] ?? "") !== (data[key] ?? ""))
+      .length;
+  }
+
+  function enterBulkMode() {
+    setEditingKey(null); // 기존 단일 편집 중이던 칸이 있으면 닫기
+    setBulkDraft({ ...data });
+    setBulkMode(true);
+  }
+
+  function exitBulkMode() {
+    const dirty = bulkDirtyCount();
+    if (dirty > 0) {
+      const ok = window.confirm(
+        `저장하지 않은 변경사항이 ${dirty}건 있습니다. 저장하지 않고 닫을까요?`
+      );
+      if (!ok) return;
+    }
+    setBulkMode(false);
+  }
+
+  function updateBulkDraft(key: string, value: string) {
+    setBulkDraft((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function saveBulkDraft() {
+    setData((prev) => ({ ...prev, ...bulkDraft }));
+    setBulkMode(false);
+  }
+
+  function revertBulkDraft() {
+    setBulkDraft({ ...data });
   }
 
   return (
@@ -640,6 +691,34 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             onChange={handleExcelUpload}
             style={{ display: "none" }}
           />
+          {!bulkMode ? (
+            <button onClick={enterBulkMode} style={toolbarBtnStyle}>
+              빈칸 일괄 입력
+            </button>
+          ) : (
+            <>
+              <span style={{ fontSize: 13, color: "#2b6cb0", alignSelf: "center" }}>
+                {bulkDirtyCount() > 0 ? `${bulkDirtyCount()}개 항목 변경됨` : "변경 없음"}
+              </span>
+              <button onClick={revertBulkDraft} style={toolbarBtnStyle}>
+                되돌리기
+              </button>
+              <button
+                onClick={saveBulkDraft}
+                style={{
+                  ...toolbarBtnStyle,
+                  background: "#2b6cb0",
+                  color: "#fff",
+                  border: "1px solid #2b6cb0",
+                }}
+              >
+                저장
+              </button>
+              <button onClick={exitBulkMode} style={toolbarBtnStyle}>
+                닫기
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -747,8 +826,36 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
               <td style={{ ...tdStyle, fontWeight: 600, background: "#f7f8fa" }}>
                 {mealType}
               </td>
-              {CATEGORIES.map((category) => {
+              {CATEGORIES.map((category, catIdx) => {
                 const key = cellKey(mealType, category);
+
+                // 빈칸 일괄 입력 모드: 기존 등록/수정 로직과 완전히 분리된 별도 렌더링
+                if (bulkMode) {
+                  const mealIdx = MEAL_TYPES.indexOf(mealType);
+                  const tabOrder = mealIdx * CATEGORIES.length + catIdx + 1;
+                  const draftValue = bulkDraft[key] ?? "";
+                  const isEmpty = draftValue.trim() === "";
+                  return (
+                    <td key={category} style={tdStyle}>
+                      <input
+                        tabIndex={tabOrder}
+                        value={draftValue}
+                        placeholder="입력"
+                        onChange={(e) => updateBulkDraft(key, e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "6px 8px",
+                          border: isEmpty ? "1px solid #2b6cb0" : "1px solid #d7dbe3",
+                          borderRadius: 6,
+                          fontSize: 13,
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </td>
+                  );
+                }
+
+                // 기존 등록/수정 로직 — 변경 없음
                 const value = data[key];
                 const isEditing = editingKey === key;
                 return (
