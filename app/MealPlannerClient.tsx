@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 const MEAL_TYPES = ["조식", "중식", "석식", "간식"];
 const CATEGORIES = ["밥", "국", "반찬A", "반찬B", "반찬C", "반찬D"];
 const DAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
+const DIET_TYPES = ["일반식", "CA식", "당뇨식", "항암식"];
 
 function getMonday(d: Date) {
   const date = new Date(d);
@@ -39,6 +40,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   const today = new Date();
   const [weekStart, setWeekStart] = useState(getMonday(today));
   const [selectedDate, setSelectedDate] = useState(today);
+  const [selectedDiet, setSelectedDiet] = useState(DIET_TYPES[0]);
   const [data, setData] = useState<Record<string, string>>({});
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -73,7 +75,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   }
 
   function cellKey(mealType: string, category: string) {
-    return `${dateKey(selectedDate)}__${mealType}__${category}`;
+    return `${dateKey(selectedDate)}__${selectedDiet}__${mealType}__${category}`;
   }
 
   function startEdit(mealType: string, category: string) {
@@ -119,7 +121,101 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   }
 
   return (
-    <div style={{ maxWidth: 960, margin: "40px auto", padding: "0 16px" }}>
+    <div style={{ maxWidth: 960, margin: "40px auto", padding: "0 16px 96px" }}>
+      <style jsx>{`
+        .diet-tabs-desktop {
+          display: flex;
+        }
+        .diet-tabs-mobile {
+          display: none;
+        }
+        @media (max-width: 640px) {
+          .diet-tabs-desktop {
+            display: none;
+          }
+          .diet-tabs-mobile {
+            display: flex;
+          }
+        }
+      `}</style>
+
+      {/* 식단 종류 탭 - PC: 상단 가로 탭 */}
+      <div
+        className="diet-tabs-desktop"
+        style={{
+          gap: 6,
+          marginBottom: 20,
+          justifyContent: "center",
+          background: "#f0f2f5",
+          borderRadius: 10,
+          padding: 4,
+          width: "fit-content",
+          margin: "0 auto 20px",
+        }}
+      >
+        {DIET_TYPES.map((diet) => {
+          const active = diet === selectedDiet;
+          return (
+            <button
+              key={diet}
+              onClick={() => setSelectedDiet(diet)}
+              style={{
+                border: "none",
+                borderRadius: 8,
+                padding: "8px 18px",
+                fontSize: 14,
+                fontWeight: active ? 600 : 400,
+                cursor: "pointer",
+                background: active ? "#fff" : "transparent",
+                color: active ? "#2b6cb0" : "#4a5568",
+                boxShadow: active ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+              }}
+            >
+              {diet}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 식단 종류 탭 - 모바일: 하단 고정 탭바 */}
+      <div
+        className="diet-tabs-mobile"
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "#fff",
+          borderTop: "1px solid #e2e5ea",
+          justifyContent: "space-around",
+          alignItems: "center",
+          padding: "8px 4px calc(8px + env(safe-area-inset-bottom))",
+          zIndex: 50,
+        }}
+      >
+        {DIET_TYPES.map((diet) => {
+          const active = diet === selectedDiet;
+          return (
+            <button
+              key={diet}
+              onClick={() => setSelectedDiet(diet)}
+              style={{
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: active ? 600 : 400,
+                color: active ? "#2b6cb0" : "#8a93a3",
+                padding: "6px 4px",
+                flex: 1,
+              }}
+            >
+              {diet}
+            </button>
+          );
+        })}
+      </div>
+
       {/* 관리자 로그인/로그아웃 */}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
         {isAdmin ? (
