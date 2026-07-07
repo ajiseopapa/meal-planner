@@ -124,12 +124,17 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   // Firestore 실시간 구독: 현재 보고 있는 주간(월~일) 범위만 구독
   const [syncing, setSyncing] = useState(true);
+  const [syncError, setSyncError] = useState<string | null>(null);
   useEffect(() => {
     setSyncing(true);
+    setSyncError(null);
     const startISO = toISODate(weekStart);
     const weekEndForQuery = new Date(weekStart);
     weekEndForQuery.setDate(weekStart.getDate() + 6);
     const endISO = toISODate(weekEndForQuery);
+
+    // 디버그: 지금 어떤 범위로 구독을 거는지 확인
+    console.log("[meals] 구독 시작", { startISO, endISO });
 
     const q = query(
       collection(db, "meals"),
@@ -140,6 +145,13 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
+        // 디버그: 실제로 몇 개의 문서를 받아왔는지 확인
+        console.log(
+          "[meals] 스냅샷 수신, 문서 수:",
+          snapshot.size,
+          snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
+        );
+
         const weekMap: Record<string, string> = {};
         snapshot.forEach((docSnap) => {
           const value = docSnap.data().value;
@@ -164,7 +176,12 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         });
         setSyncing(false);
       },
-      () => setSyncing(false)
+      (err) => {
+        // 디버그: 여기가 원래 조용히 삼켜지던 부분 — 이제 콘솔과 화면에 표시함
+        console.error("[meals] 구독 에러:", err.code, err.message, err);
+        setSyncError(`${err.code}: ${err.message}`);
+        setSyncing(false);
+      }
     );
 
     return () => unsubscribe();
@@ -548,6 +565,22 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           }
         }
       `}</style>
+
+      {syncError && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: "10px 14px",
+            borderRadius: 8,
+            background: "#fff5f5",
+            border: "1px solid #feb2b2",
+            color: "#c53030",
+            fontSize: 13,
+          }}
+        >
+          동기화 오류: {syncError} (콘솔에서 [meals] 로그 확인)
+        </div>
+      )}
 
       {/* 상단 헤더: 타이틀(좌) + 식단 탭(중앙) + 관리자 설정(우) */}
       <div style={{ position: "relative", marginBottom: 20, minHeight: 44 }}>
