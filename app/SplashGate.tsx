@@ -22,6 +22,7 @@ export default function SplashGate({ children }: { children: React.ReactNode }) 
           style={{
             position: 'fixed',
             inset: 0,
+            height: '100dvh',
             background: '#ffffff',
             display: 'flex',
             alignItems: 'center',
