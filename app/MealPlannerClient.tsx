@@ -34,13 +34,18 @@ function isSameDay(a: Date, b: Date) {
   );
 }
 
-function dateKey(d: Date) {
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+function toISODate(d: Date) {
+  // 월(getMonth)은 0부터 시작하므로 +1을 하고, 2자리로 맞춥니다.
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${dd}`;
 }
 
-function toISODate(d: Date) {
-  // padStart(2, "0")을 제거하여 2026-7-7 형식이 되도록 변경
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+function dateKey(d: Date) {
+  // 위와 완전히 똑같은 구조로 수정합니다.
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${dd}`;
 }
 
 function buildKey(d: Date, diet: string, mealType: string, category: string) {
@@ -119,6 +124,14 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   // 빈칸 일괄 입력 모드 관련 상태 (기존 등록 기능과는 완전히 별도)
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkDraft, setBulkDraft] = useState<Record<string, string>>({});
+
+  // 서버(UTC)와 브라우저(KST)의 시간대가 달라 "오늘" 계산이 어긋나면서
+  // 생기는 하이드레이션 불일치(React #418)를 막기 위해, 마운트 전까지는
+  // 날짜에 의존하는 실제 화면을 그리지 않습니다.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Firestore 실시간 구독: 현재 보고 있는 주간(월~일) 범위만 구독
   const [syncing, setSyncing] = useState(true);
@@ -465,6 +478,24 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   function revertBulkDraft() {
     setBulkDraft({ ...data });
+  }
+
+  if (!mounted) {
+    return (
+      <div
+        style={{
+          maxWidth: 960,
+          margin: "40px auto",
+          padding: "0 16px 140px",
+          width: "100%",
+          boxSizing: "border-box",
+          textAlign: "center",
+          color: "#8a93a3",
+        }}
+      >
+        불러오는 중...
+      </div>
+    );
   }
 
   return (
