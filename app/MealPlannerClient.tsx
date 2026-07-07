@@ -196,7 +196,17 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       </div>
 
       {/* 요일 탭 */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, justifyContent: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          marginBottom: 20,
+          justifyContent: "flex-start",
+          overflowX: "auto",
+          paddingBottom: 4,
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
         {days.map((d, i) => {
           const active = isSameDay(d, selectedDate);
           const isToday = isSameDay(d, today);
@@ -210,7 +220,8 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                 border: active ? "2px solid #2b6cb0" : "1px solid #e2e5ea",
                 background: active ? "#ebf4ff" : "#fff",
                 cursor: "pointer",
-                minWidth: 64,
+                minWidth: 56,
+                flexShrink: 0,
                 textAlign: "center",
                 position: "relative",
               }}
@@ -239,7 +250,8 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       </div>
 
       {/* 표 */}
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+      <table style={{ width: "100%", minWidth: 560, borderCollapse: "collapse", fontSize: 14 }}>
         <thead>
           <tr>
             <th style={thStyle}></th>
@@ -309,6 +321,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
