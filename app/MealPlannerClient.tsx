@@ -123,7 +123,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   }
 
   return (
-    <div style={{ maxWidth: 960, margin: "40px auto", padding: "0 16px 96px", width: "100%", boxSizing: "border-box" }}>
+    <div style={{ maxWidth: 960, margin: "40px auto", padding: "0 16px 140px", width: "100%", boxSizing: "border-box" }}>
       <style jsx global>{`
         html, body {
           overflow-x: hidden;
@@ -199,6 +199,22 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           }
           .site-title-mobile {
             display: block;
+          }
+        }
+        .day-tabs-row {
+          justify-content: center;
+        }
+        .day-tab-btn {
+          flex: 1 1 0;
+          max-width: 120px;
+        }
+        @media (max-width: 640px) {
+          .day-tabs-row {
+            justify-content: flex-start;
+          }
+          .day-tab-btn {
+            flex: 0 0 auto;
+            max-width: none;
           }
         }
       `}</style>
@@ -328,7 +344,8 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           borderTop: "1px solid #e2e5ea",
           justifyContent: "space-around",
           alignItems: "center",
-          padding: "8px 4px calc(8px + env(safe-area-inset-bottom))",
+          gap: 6,
+          padding: "10px 8px calc(10px + env(safe-area-inset-bottom))",
           zIndex: 50,
         }}
       >
@@ -340,13 +357,19 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
               onClick={() => setSelectedDiet(diet)}
               style={{
                 border: "none",
-                background: "transparent",
                 cursor: "pointer",
-                fontSize: 12,
-                fontWeight: active ? 600 : 400,
-                color: active ? "#2b6cb0" : "#8a93a3",
-                padding: "6px 4px",
+                fontSize: 14,
+                fontWeight: active ? 700 : 500,
+                color: active ? "#fff" : "#5a6472",
+                background: active ? "#2b6cb0" : "transparent",
+                borderRadius: 12,
+                minHeight: 56,
+                padding: "8px 4px",
                 flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "background 0.15s ease, color 0.15s ease",
               }}
             >
               {diet}
@@ -451,11 +474,11 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
       {/* 요일 탭 */}
       <div
+        className="day-tabs-row"
         style={{
           display: "flex",
           gap: 8,
           marginBottom: 20,
-          justifyContent: "flex-start",
           overflowX: "auto",
           paddingBottom: 4,
           WebkitOverflowScrolling: "touch",
@@ -467,6 +490,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           return (
             <button
               key={i}
+              className="day-tab-btn"
               onClick={() => setSelectedDate(d)}
               style={{
                 padding: "10px 14px",
