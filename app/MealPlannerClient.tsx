@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, type CSSProperties, type ChangeEvent } from "react";
+import { useState, useEffect, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import { db } from "@/lib/firebase";
@@ -116,13 +116,6 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   // 삭제 메뉴(하루/이번주/전체) 열림 상태
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
-
-  // 엑셀 업로드 관련 상태
-  const [excelBusy, setExcelBusy] = useState(false);
-  const [excelResult, setExcelResult] = useState<{ success: number; errors: string[] } | null>(
-    null
-  );
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 빈칸 일괄 입력 모드 관련 상태 (기존 등록 기능과는 완전히 별도)
   const [bulkMode, setBulkMode] = useState(false);
@@ -426,101 +419,38 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
-  // 엑셀 업로드 처리: 헤더 [날짜, 식단, 끼니, 카테고리, 메뉴]
-  async function handleExcelUpload(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setExcelBusy(true);
-    setExcelResult(null);
-
-    try {
-      const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { cellDates: true });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-
-      const errors: string[] = [];
-      const updates: Record<string, string> = {};
-      const firestoreUpdates: MealUpdate[] = [];
-      let success = 0;
-
-      rows.forEach((row, idx) => {
-        const rowNum = idx + 2; // 1행은 헤더
-        const rawDate = row["날짜"];
-        const diet = String(row["식단"] ?? "").trim();
-        const mealType = String(row["끼니"] ?? "").trim();
-        const category = String(row["카테고리"] ?? "").trim();
-        const menu = String(row["메뉴"] ?? "").trim();
-
-        let parsedDate: Date | null = null;
-        if (rawDate instanceof Date && !isNaN(rawDate.getTime())) {
-          parsedDate = rawDate;
-        } else if (typeof rawDate === "string" && rawDate.trim()) {
-          const normalized = rawDate.trim().replace(/\./g, "-").replace(/\//g, "-");
-          const d = new Date(normalized);
-          if (!isNaN(d.getTime())) parsedDate = d;
-        } else if (typeof rawDate === "number") {
-          // 엑셀 시리얼 날짜값 대비
-          const parsed = XLSX.SSF?.parse_date_code?.(rawDate);
-          if (parsed) parsedDate = new Date(parsed.y, parsed.m - 1, parsed.d);
-        }
-
-        if (!parsedDate) {
-          errors.push(`${rowNum}행: 날짜를 인식할 수 없습니다 (${String(rawDate)})`);
-          return;
-        }
-        if (!DIET_TYPES.includes(diet)) {
-          errors.push(`${rowNum}행: 식단 종류가 올바르지 않습니다 (${diet || "비어있음"})`);
-          return;
-        }
-        if (!MEAL_TYPES.includes(mealType)) {
-          errors.push(`${rowNum}행: 끼니가 올바르지 않습니다 (${mealType || "비어있음"})`);
-          return;
-        }
-        if (!CATEGORIES.includes(category)) {
-          errors.push(`${rowNum}행: 카테고리가 올바르지 않습니다 (${category || "비어있음"})`);
-          return;
-        }
-        if (!menu) {
-          errors.push(`${rowNum}행: 메뉴명이 비어있습니다`);
-          return;
-        }
-
-        updates[buildKey(parsedDate, diet, mealType, category)] = menu;
-        firestoreUpdates.push({
-          key: buildKey(parsedDate, diet, mealType, category),
-          date: parsedDate,
-          diet,
-          mealType,
-          category,
-          value: menu,
-        });
-        success++;
-      });
-
-      setData((prev) => ({ ...prev, ...updates }));
-      if (firestoreUpdates.length > 0) {
-        await commitMealUpdates(firestoreUpdates);
-      }
-      setExcelResult({ success, errors: errors.slice(0, 10) });
-    } catch {
-      setExcelResult({
-        success: 0,
-        errors: ["파일을 읽는 중 오류가 발생했습니다. 양식을 확인해주세요."],
-      });
-    } finally {
-      setExcelBusy(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  }
-
-  function downloadTemplate() {
+  // 지금 보고 있는 주(월~일) 전체 데이터를 엑셀로 내보내기
+  function handleExportExcel() {
     const header = ["날짜", "식단", "끼니", "카테고리", "메뉴"];
-    const example = ["2026-07-06", "일반식", "조식", "밥", "현미밥"];
-    const ws = XLSX.utils.aoa_to_sheet([header, example]);
+    const rows: string[][] = [];
+
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(weekStart.getDate() + i);
+      const dateLabel = toISODate(d);
+      for (const diet of DIET_TYPES) {
+        for (const mealType of MEAL_TYPES) {
+          for (const category of CATEGORIES) {
+            const key = buildKey(d, diet, mealType, category);
+            const value = data[key];
+            if (value) {
+              rows.push([dateLabel, diet, mealType, category, value]);
+            }
+          }
+        }
+      }
+    }
+
+    if (rows.length === 0) {
+      alert("내보낼 데이터가 없습니다.");
+      return;
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "식단");
-    XLSX.writeFile(wb, "식단표_업로드양식.xlsx");
+    const fileName = `식단표_${toISODate(weekStart)}_${toISODate(weekEnd)}.xlsx`;
+    XLSX.writeFile(wb, fileName);
   }
 
   // ── 빈칸 일괄 입력 모드 (기존 등록/수정 로직은 건드리지 않고 별도로 얹음) ──
@@ -984,23 +914,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             이번 주 → 다음 주 복사
           </button>
 
-          <button onClick={downloadTemplate} style={toolbarBtnStyle}>
-            엑셀 양식 다운로드
+          <button onClick={handleExportExcel} style={toolbarBtnStyle}>
+            엑셀로 내보내기
           </button>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            style={toolbarBtnStyle}
-            disabled={excelBusy}
-          >
-            {excelBusy ? "업로드 중..." : "엑셀로 일괄 등록"}
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={handleExcelUpload}
-            style={{ display: "none" }}
-          />
           {!bulkMode ? (
             <button onClick={enterBulkMode} style={toolbarBtnStyle}>
               빈칸 일괄 입력
@@ -1030,7 +946,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             </>
           )}
 
-          <div style={{ position: "relative", display: "inline-block", marginLeft: "auto" }}>
+          <div style={{ position: "relative", display: "inline-block" }}>
             <button onClick={() => setShowDeleteMenu((v) => !v)} style={dangerBtnStyle}>
               삭제
             </button>
@@ -1051,36 +967,6 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
               </div>
             )}
           </div>
-        </div>
-      )}
-
-      {excelResult && (
-        <div
-          style={{
-            ...resultBoxStyle,
-            borderColor: excelResult.errors.length > 0 ? "#e53e3e" : "#2b6cb0",
-          }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: excelResult.errors.length ? 6 : 0 }}>
-            엑셀 업로드 결과: 성공 {excelResult.success}건
-            {excelResult.errors.length > 0 &&
-              ` · 오류 ${excelResult.errors.length}건${
-                excelResult.errors.length >= 10 ? "+" : ""
-              }`}
-          </div>
-          {excelResult.errors.length > 0 && (
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#e53e3e" }}>
-              {excelResult.errors.map((err, i) => (
-                <li key={i}>{err}</li>
-              ))}
-            </ul>
-          )}
-          <button
-            onClick={() => setExcelResult(null)}
-            style={{ ...smallBtnStyle, marginTop: 8 }}
-          >
-            닫기
-          </button>
         </div>
       )}
 
@@ -1469,15 +1355,6 @@ const deleteMenuItemStyle: CSSProperties = {
   fontSize: 13,
   cursor: "pointer",
   color: "#1f2430",
-};
-
-const resultBoxStyle: CSSProperties = {
-  border: "1px solid #e2e5ea",
-  borderRadius: 10,
-  padding: 12,
-  marginBottom: 16,
-  background: "#f9fafb",
-  fontSize: 13,
 };
 
 const navBtnStyle: CSSProperties = {
