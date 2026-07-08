@@ -419,37 +419,48 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
-  // 지금 보고 있는 주(월~일) 전체 데이터를 엑셀로 내보내기
+  // 지금 보고 있는 주(월~일) 전체 데이터를, 화면에 보이는 표(끼니 x 카테고리) 형태 그대로
+  // 요일별 블록으로 이어붙여서 엑셀로 내보내기 (현재 선택된 식단 종류 기준)
   function handleExportExcel() {
-    const header = ["날짜", "식단", "끼니", "카테고리", "메뉴"];
-    const rows: string[][] = [];
+    const rows: (string | number)[][] = [];
+    const merges: XLSX.Range[] = [];
 
     for (let i = 0; i < 7; i++) {
       const d = new Date(weekStart);
       d.setDate(weekStart.getDate() + i);
-      const dateLabel = toISODate(d);
-      for (const diet of DIET_TYPES) {
-        for (const mealType of MEAL_TYPES) {
-          for (const category of CATEGORIES) {
-            const key = buildKey(d, diet, mealType, category);
-            const value = data[key];
-            if (value) {
-              rows.push([dateLabel, diet, mealType, category, value]);
-            }
-          }
-        }
+      const dateLabel = `${toISODate(d)} (${DAY_LABELS[i]})`;
+
+      // 날짜 제목 행 (카테고리 열 수만큼 병합)
+      const titleRowIndex = rows.length;
+      rows.push([dateLabel, ...CATEGORIES.map(() => "")]);
+      merges.push({
+        s: { r: titleRowIndex, c: 0 },
+        e: { r: titleRowIndex, c: CATEGORIES.length },
+      });
+
+      // 헤더 행: 빈칸 + 카테고리들
+      rows.push(["", ...CATEGORIES]);
+
+      // 끼니별 행
+      for (const mealType of MEAL_TYPES) {
+        const rowValues = CATEGORIES.map((category) => {
+          const key = buildKey(d, selectedDiet, mealType, category);
+          return data[key] ?? "";
+        });
+        rows.push([mealType, ...rowValues]);
       }
+
+      // 다음 날짜 블록과 구분하는 빈 줄
+      rows.push([]);
     }
 
-    if (rows.length === 0) {
-      alert("내보낼 데이터가 없습니다.");
-      return;
-    }
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!merges"] = merges;
+    ws["!cols"] = [{ wch: 10 }, ...CATEGORIES.map(() => ({ wch: 12 }))];
 
-    const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "식단");
-    const fileName = `식단표_${toISODate(weekStart)}_${toISODate(weekEnd)}.xlsx`;
+    XLSX.utils.book_append_sheet(wb, ws, selectedDiet);
+    const fileName = `식단표_${selectedDiet}_${toISODate(weekStart)}_${toISODate(weekEnd)}.xlsx`;
     XLSX.writeFile(wb, fileName);
   }
 
@@ -568,6 +579,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           white-space: nowrap;
         }
         @media (max-width: 640px) {
+          .header-desktop {
+            display: none;
+          }
           .diet-tabs-desktop {
             display: none;
           }
@@ -646,8 +660,8 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         </div>
       )}
 
-      {/* 상단 헤더: 타이틀(좌) + 식단 탭(중앙) + 관리자 설정(우) */}
-      <div style={{ position: "relative", marginBottom: 20, minHeight: 44 }}>
+      {/* 상단 헤더: 타이틀(좌) + 식단 탭(중앙) + 관리자 설정(우) - 데스크탑 전용 */}
+      <div className="header-desktop" style={{ position: "relative", marginBottom: 20, minHeight: 44 }}>
         <h1
           className="site-title-desktop"
           style={{ position: "absolute", top: 0, left: 0, ...titleStyle }}
