@@ -321,6 +321,49 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     copyWeekToNextWeek();
   }
 
+  // 이번 주(월~일) 전체 - 모든 식단 종류 x 끼니 x 카테고리 - 를 통째로 삭제
+  async function handleDeleteWeek() {
+    const ok = window.confirm(
+      `이번 주(${formatDate(weekStart)} ~ ${formatDate(
+        weekEnd
+      )}) 식단 전체를 삭제할까요?\n모든 식단 종류(일반식/CA식/당뇨식/항암식)의 등록된 내용이 전부 지워지며, 되돌릴 수 없습니다.`
+    );
+    if (!ok) return;
+
+    const reallyOk = window.confirm("정말로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.");
+    if (!reallyOk) return;
+
+    const deletions: MealUpdate[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart);
+      d.setDate(weekStart.getDate() + i);
+      for (const diet of DIET_TYPES) {
+        for (const mealType of MEAL_TYPES) {
+          for (const category of CATEGORIES) {
+            const key = buildKey(d, diet, mealType, category);
+            if (data[key]) {
+              deletions.push({ key, date: d, diet, mealType, category, value: "" });
+            }
+          }
+        }
+      }
+    }
+
+    if (deletions.length === 0) {
+      alert("이번 주에 등록된 내용이 없습니다.");
+      return;
+    }
+
+    setData((prev) => {
+      const next = { ...prev };
+      for (const u of deletions) next[u.key] = "";
+      return next;
+    });
+
+    await commitMealUpdates(deletions);
+    alert(`이번 주 식단 ${deletions.length}건을 삭제했습니다.`);
+  }
+
   // 엑셀 업로드 처리: 헤더 [날짜, 식단, 끼니, 카테고리, 메뉴]
   async function handleExcelUpload(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -878,6 +921,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           <button onClick={handleCopyWeek} style={toolbarBtnStyle}>
             이번 주 → 다음 주 복사
           </button>
+          <button onClick={handleDeleteWeek} style={dangerBtnStyle}>
+            이번 주 전체 삭제
+          </button>
           <button onClick={downloadTemplate} style={toolbarBtnStyle}>
             엑셀 양식 다운로드
           </button>
@@ -1303,6 +1349,17 @@ const toolbarBtnStyle: CSSProperties = {
   fontSize: 13,
   color: "#1f2430",
   fontWeight: 500,
+};
+
+const dangerBtnStyle: CSSProperties = {
+  border: "1px solid #e53e3e",
+  background: "#fff",
+  borderRadius: 8,
+  padding: "8px 14px",
+  cursor: "pointer",
+  fontSize: 13,
+  color: "#e53e3e",
+  fontWeight: 600,
 };
 
 const resultBoxStyle: CSSProperties = {
