@@ -984,28 +984,6 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             이번 주 → 다음 주 복사
           </button>
 
-          <div style={{ position: "relative", display: "inline-block" }}>
-            <button onClick={() => setShowDeleteMenu((v) => !v)} style={dangerBtnStyle}>
-              삭제
-            </button>
-            {showDeleteMenu && (
-              <div style={deleteMenuStyle}>
-                <button onClick={handleDeleteDay} style={deleteMenuItemStyle}>
-                  선택한 날짜만 삭제
-                </button>
-                <button onClick={handleDeleteWeek} style={deleteMenuItemStyle}>
-                  이번 주 전체 삭제
-                </button>
-                <button
-                  onClick={handleDeleteAll}
-                  style={{ ...deleteMenuItemStyle, color: "#e53e3e", fontWeight: 600 }}
-                >
-                  전체 삭제
-                </button>
-              </div>
-            )}
-          </div>
-
           <button onClick={downloadTemplate} style={toolbarBtnStyle}>
             엑셀 양식 다운로드
           </button>
@@ -1051,6 +1029,28 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
               </button>
             </>
           )}
+
+          <div style={{ position: "relative", display: "inline-block", marginLeft: "auto" }}>
+            <button onClick={() => setShowDeleteMenu((v) => !v)} style={dangerBtnStyle}>
+              삭제
+            </button>
+            {showDeleteMenu && (
+              <div style={{ ...deleteMenuStyle, left: "auto", right: 0 }}>
+                <button onClick={handleDeleteDay} style={deleteMenuItemStyle}>
+                  선택한 날짜만 삭제
+                </button>
+                <button onClick={handleDeleteWeek} style={deleteMenuItemStyle}>
+                  이번 주 전체 삭제
+                </button>
+                <button
+                  onClick={handleDeleteAll}
+                  style={{ ...deleteMenuItemStyle, color: "#e53e3e", fontWeight: 600 }}
+                >
+                  전체 삭제
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
