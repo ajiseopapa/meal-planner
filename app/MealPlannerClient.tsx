@@ -114,6 +114,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   const [loginError, setLoginError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // 삭제 메뉴(하루/이번주/전체) 열림 상태
+  const [showDeleteMenu, setShowDeleteMenu] = useState(false);
+
   // 엑셀 업로드 관련 상태
   const [excelBusy, setExcelBusy] = useState(false);
   const [excelResult, setExcelResult] = useState<{ success: number; errors: string[] } | null>(
@@ -323,15 +326,13 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   // 이번 주(월~일) 전체 - 모든 식단 종류 x 끼니 x 카테고리 - 를 통째로 삭제
   async function handleDeleteWeek() {
+    setShowDeleteMenu(false);
     const ok = window.confirm(
       `이번 주(${formatDate(weekStart)} ~ ${formatDate(
         weekEnd
       )}) 식단 전체를 삭제할까요?\n모든 식단 종류(일반식/CA식/당뇨식/항암식)의 등록된 내용이 전부 지워지며, 되돌릴 수 없습니다.`
     );
     if (!ok) return;
-
-    const reallyOk = window.confirm("정말로 삭제하시겠습니까? 이 작업은 취소할 수 없습니다.");
-    if (!reallyOk) return;
 
     const deletions: MealUpdate[] = [];
     for (let i = 0; i < 7; i++) {
@@ -362,6 +363,67 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
     await commitMealUpdates(deletions);
     alert(`이번 주 식단 ${deletions.length}건을 삭제했습니다.`);
+  }
+
+  // 지금 선택된 날짜 하루치 - 모든 식단 종류 - 삭제
+  async function handleDeleteDay() {
+    setShowDeleteMenu(false);
+    const label = formatDate(selectedDate);
+    const ok = window.confirm(
+      `${label} 하루치 식단(모든 식단 종류)을 삭제할까요?\n되돌릴 수 없습니다.`
+    );
+    if (!ok) return;
+
+    const deletions: MealUpdate[] = [];
+    for (const diet of DIET_TYPES) {
+      for (const mealType of MEAL_TYPES) {
+        for (const category of CATEGORIES) {
+          const key = buildKey(selectedDate, diet, mealType, category);
+          if (data[key]) {
+            deletions.push({ key, date: selectedDate, diet, mealType, category, value: "" });
+          }
+        }
+      }
+    }
+
+    if (deletions.length === 0) {
+      alert("선택한 날짜에 등록된 내용이 없습니다.");
+      return;
+    }
+
+    setData((prev) => {
+      const next = { ...prev };
+      for (const u of deletions) next[u.key] = "";
+      return next;
+    });
+
+    await commitMealUpdates(deletions);
+    alert(`${label} 식단 ${deletions.length}건을 삭제했습니다.`);
+  }
+
+  // 지금까지 등록된 모든 날짜 전체 삭제 (서버에서 컬렉션 자체를 비움)
+  async function handleDeleteAll() {
+    setShowDeleteMenu(false);
+    const typed = window.prompt(
+      '정말로 전체 식단 데이터를 삭제합니다. 이번 주뿐 아니라 등록된 모든 날짜가 사라지며 되돌릴 수 없습니다.\n계속하려면 정확히 "삭제"를 입력하세요.'
+    );
+    if (typed !== "삭제") {
+      if (typed !== null) alert("입력값이 일치하지 않아 취소되었습니다.");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/admin/meals/delete-all", { method: "POST" });
+      const json = await res.json();
+      if (json.ok) {
+        setData({});
+        alert(`전체 ${json.deleted}건을 삭제했습니다.`);
+      } else {
+        alert(json.message ?? "삭제에 실패했습니다.");
+      }
+    } catch {
+      alert("삭제 중 오류가 발생했습니다.");
+    }
   }
 
   // 엑셀 업로드 처리: 헤더 [날짜, 식단, 끼니, 카테고리, 메뉴]
@@ -921,9 +983,29 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           <button onClick={handleCopyWeek} style={toolbarBtnStyle}>
             이번 주 → 다음 주 복사
           </button>
-          <button onClick={handleDeleteWeek} style={dangerBtnStyle}>
-            이번 주 전체 삭제
-          </button>
+
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <button onClick={() => setShowDeleteMenu((v) => !v)} style={dangerBtnStyle}>
+              삭제
+            </button>
+            {showDeleteMenu && (
+              <div style={deleteMenuStyle}>
+                <button onClick={handleDeleteDay} style={deleteMenuItemStyle}>
+                  선택한 날짜만 삭제
+                </button>
+                <button onClick={handleDeleteWeek} style={deleteMenuItemStyle}>
+                  이번 주 전체 삭제
+                </button>
+                <button
+                  onClick={handleDeleteAll}
+                  style={{ ...deleteMenuItemStyle, color: "#e53e3e", fontWeight: 600 }}
+                >
+                  전체 삭제
+                </button>
+              </div>
+            )}
+          </div>
+
           <button onClick={downloadTemplate} style={toolbarBtnStyle}>
             엑셀 양식 다운로드
           </button>
@@ -1360,6 +1442,33 @@ const dangerBtnStyle: CSSProperties = {
   fontSize: 13,
   color: "#e53e3e",
   fontWeight: 600,
+};
+
+const deleteMenuStyle: CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 6px)",
+  left: 0,
+  background: "#fff",
+  border: "1px solid #e2e5ea",
+  borderRadius: 10,
+  boxShadow: "0 4px 16px rgba(0,0,0,0.1)",
+  padding: 6,
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  minWidth: 160,
+  zIndex: 30,
+};
+
+const deleteMenuItemStyle: CSSProperties = {
+  border: "none",
+  background: "transparent",
+  textAlign: "left",
+  padding: "8px 10px",
+  borderRadius: 6,
+  fontSize: 13,
+  cursor: "pointer",
+  color: "#1f2430",
 };
 
 const resultBoxStyle: CSSProperties = {
