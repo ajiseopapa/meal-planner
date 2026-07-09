@@ -116,6 +116,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   // 삭제 메뉴(하루/이번주/전체) 열림 상태
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
+  const [deleteModal, setDeleteModal] = useState<null | "day" | "week" | "all">(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   // 빈칸 일괄 입력 모드 관련 상태 (기존 등록 기능과는 완전히 별도)
   const [bulkMode, setBulkMode] = useState(false);
@@ -128,6 +131,17 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // 삭제 확인 모달이 열려 있을 때 Esc 키로 닫을 수 있게 합니다.
+  useEffect(() => {
+    if (!deleteModal) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") closeDeleteModal();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deleteModal, deleteLoading]);
 
   // Firestore 실시간 구독: 현재 보고 있는 주간(월~일) 범위만 구독
   const [syncing, setSyncing] = useState(true);
@@ -317,16 +331,66 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     copyWeekToNextWeek();
   }
 
-  // 이번 주(월~일) 전체 - 모든 식단 종류 x 끼니 x 카테고리 - 를 통째로 삭제
-  async function handleDeleteWeek() {
-    setShowDeleteMenu(false);
-    const ok = window.confirm(
-      `이번 주(${formatDate(weekStart)} ~ ${formatDate(
-        weekEnd
-      )}) 식단 전체를 삭제할까요?\n모든 식단 종류(일반식/CA식/당뇨식/항암식)의 등록된 내용이 전부 지워지며, 되돌릴 수 없습니다.`
-    );
-    if (!ok) return;
+  // 삭제 확인 모달을 닫습니다 (삭제 진행 중에는 닫지 않음).
+  function closeDeleteModal() {
+    if (deleteLoading) return;
+    setDeleteModal(null);
+    setDeleteConfirmText("");
+  }
 
+  // 삭제 메뉴의 각 항목은 실제 삭제를 바로 실행하지 않고, 예쁜 확인 모달을 엽니다.
+  function handleDeleteDay() {
+    setShowDeleteMenu(false);
+    setDeleteModal("day");
+  }
+
+  function handleDeleteWeek() {
+    setShowDeleteMenu(false);
+    setDeleteModal("week");
+  }
+
+  function handleDeleteAll() {
+    setShowDeleteMenu(false);
+    setDeleteConfirmText("");
+    setDeleteModal("all");
+  }
+
+  // 지금 선택된 날짜 하루치 - 모든 식단 종류 - 삭제
+  async function executeDeleteDay() {
+    const label = formatDate(selectedDate);
+    const deletions: MealUpdate[] = [];
+    for (const diet of DIET_TYPES) {
+      for (const mealType of MEAL_TYPES) {
+        for (const category of CATEGORIES) {
+          const key = buildKey(selectedDate, diet, mealType, category);
+          if (data[key]) {
+            deletions.push({ key, date: selectedDate, diet, mealType, category, value: "" });
+          }
+        }
+      }
+    }
+
+    if (deletions.length === 0) {
+      setDeleteModal(null);
+      alert("선택한 날짜에 등록된 내용이 없습니다.");
+      return;
+    }
+
+    setDeleteLoading(true);
+    setData((prev) => {
+      const next = { ...prev };
+      for (const u of deletions) next[u.key] = "";
+      return next;
+    });
+
+    await commitMealUpdates(deletions);
+    setDeleteLoading(false);
+    setDeleteModal(null);
+    alert(`${label} 식단 ${deletions.length}건을 삭제했습니다.`);
+  }
+
+  // 이번 주(월~일) 전체 - 모든 식단 종류 x 끼니 x 카테고리 - 를 통째로 삭제
+  async function executeDeleteWeek() {
     const deletions: MealUpdate[] = [];
     for (let i = 0; i < 7; i++) {
       const d = new Date(weekStart);
@@ -344,10 +408,12 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     }
 
     if (deletions.length === 0) {
+      setDeleteModal(null);
       alert("이번 주에 등록된 내용이 없습니다.");
       return;
     }
 
+    setDeleteLoading(true);
     setData((prev) => {
       const next = { ...prev };
       for (const u of deletions) next[u.key] = "";
@@ -355,68 +421,75 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     });
 
     await commitMealUpdates(deletions);
+    setDeleteLoading(false);
+    setDeleteModal(null);
     alert(`이번 주 식단 ${deletions.length}건을 삭제했습니다.`);
   }
 
-  // 지금 선택된 날짜 하루치 - 모든 식단 종류 - 삭제
-  async function handleDeleteDay() {
-    setShowDeleteMenu(false);
-    const label = formatDate(selectedDate);
-    const ok = window.confirm(
-      `${label} 하루치 식단(모든 식단 종류)을 삭제할까요?\n되돌릴 수 없습니다.`
-    );
-    if (!ok) return;
-
-    const deletions: MealUpdate[] = [];
-    for (const diet of DIET_TYPES) {
-      for (const mealType of MEAL_TYPES) {
-        for (const category of CATEGORIES) {
-          const key = buildKey(selectedDate, diet, mealType, category);
-          if (data[key]) {
-            deletions.push({ key, date: selectedDate, diet, mealType, category, value: "" });
-          }
-        }
-      }
-    }
-
-    if (deletions.length === 0) {
-      alert("선택한 날짜에 등록된 내용이 없습니다.");
-      return;
-    }
-
-    setData((prev) => {
-      const next = { ...prev };
-      for (const u of deletions) next[u.key] = "";
-      return next;
-    });
-
-    await commitMealUpdates(deletions);
-    alert(`${label} 식단 ${deletions.length}건을 삭제했습니다.`);
-  }
-
   // 지금까지 등록된 모든 날짜 전체 삭제 (서버에서 컬렉션 자체를 비움)
-  async function handleDeleteAll() {
-    setShowDeleteMenu(false);
-    const typed = window.prompt(
-      '정말로 전체 식단 데이터를 삭제합니다. 이번 주뿐 아니라 등록된 모든 날짜가 사라지며 되돌릴 수 없습니다.\n계속하려면 정확히 "삭제"를 입력하세요.'
-    );
-    if (typed !== "삭제") {
-      if (typed !== null) alert("입력값이 일치하지 않아 취소되었습니다.");
-      return;
-    }
+  async function executeDeleteAll() {
+    if (deleteConfirmText !== "삭제") return;
 
+    setDeleteLoading(true);
     try {
       const res = await fetch("/api/admin/meals/delete-all", { method: "POST" });
       const json = await res.json();
       if (json.ok) {
         setData({});
+        setDeleteModal(null);
         alert(`전체 ${json.deleted}건을 삭제했습니다.`);
       } else {
         alert(json.message ?? "삭제에 실패했습니다.");
       }
     } catch {
       alert("삭제 중 오류가 발생했습니다.");
+    } finally {
+      setDeleteLoading(false);
+      setDeleteConfirmText("");
     }
+  }
+
+  // 삭제 확인 모달에 표시할 제목/설명/버튼 텍스트를 종류별로 반환합니다.
+  function getDeleteModalContent(): {
+    title: string;
+    message: string;
+    confirmLabel: string;
+    requireTyped: boolean;
+    onConfirm: () => void;
+  } | null {
+    if (deleteModal === "day") {
+      return {
+        title: "선택한 날짜 삭제",
+        message: `${formatDate(
+          selectedDate
+        )} 하루치 식단(모든 식단 종류)을 삭제할까요?\n되돌릴 수 없습니다.`,
+        confirmLabel: "삭제",
+        requireTyped: false,
+        onConfirm: () => void executeDeleteDay(),
+      };
+    }
+    if (deleteModal === "week") {
+      return {
+        title: "이번 주 전체 삭제",
+        message: `이번 주(${formatDate(weekStart)} ~ ${formatDate(
+          weekEnd
+        )}) 식단 전체를 삭제할까요?\n모든 식단 종류(일반식/CA식/당뇨식/항암식)의 등록된 내용이 전부 지워지며, 되돌릴 수 없습니다.`,
+        confirmLabel: "삭제",
+        requireTyped: false,
+        onConfirm: () => void executeDeleteWeek(),
+      };
+    }
+    if (deleteModal === "all") {
+      return {
+        title: "전체 삭제",
+        message:
+          "정말로 전체 식단 데이터를 삭제합니다.\n이번 주뿐 아니라 등록된 모든 날짜가 사라지며, 되돌릴 수 없습니다.",
+        confirmLabel: "완전히 삭제",
+        requireTyped: true,
+        onConfirm: () => void executeDeleteAll(),
+      };
+    }
+    return null;
   }
 
   // 지금 보고 있는 주(월~일) 전체 데이터를, 화면에 보이는 표(끼니 x 카테고리) 형태 그대로
@@ -641,6 +714,30 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             flex: 0 0 auto;
             max-width: none;
           }
+        }
+        @keyframes deleteModalFadeIn {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+        @keyframes deleteModalPopIn {
+          from {
+            opacity: 0;
+            transform: translateY(8px) scale(0.96);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        .delete-modal-overlay {
+          animation: deleteModalFadeIn 0.15s ease-out;
+        }
+        .delete-modal-card {
+          animation: deleteModalPopIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
         }
       `}</style>
 
@@ -1237,6 +1334,70 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           </div>
         ))}
       </div>
+
+      {deleteModal &&
+        (() => {
+          const content = getDeleteModalContent();
+          if (!content) return null;
+          const confirmDisabled =
+            deleteLoading || (content.requireTyped && deleteConfirmText !== "삭제");
+          return (
+            <div className="delete-modal-overlay" style={modalOverlayStyle} onClick={closeDeleteModal}>
+              <div
+                className="delete-modal-card"
+                style={modalCardStyle}
+                onClick={(e) => e.stopPropagation()}
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="delete-modal-title"
+              >
+                <div style={modalIconWrapStyle}>
+                  <TrashIcon />
+                </div>
+                <h3 id="delete-modal-title" style={modalTitleStyle}>
+                  {content.title}
+                </h3>
+                <p style={modalMessageStyle}>{content.message}</p>
+
+                {content.requireTyped && (
+                  <div style={{ marginTop: 4 }}>
+                    <div style={modalHintStyle}>
+                      계속하려면 아래 입력창에 <b style={{ color: "#e53e3e" }}>삭제</b>를
+                      입력하세요.
+                    </div>
+                    <input
+                      autoFocus
+                      value={deleteConfirmText}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !confirmDisabled) content.onConfirm();
+                      }}
+                      placeholder="삭제"
+                      style={modalInputStyle}
+                    />
+                  </div>
+                )}
+
+                <div style={modalActionsStyle}>
+                  <button onClick={closeDeleteModal} style={modalCancelBtnStyle} disabled={deleteLoading}>
+                    취소
+                  </button>
+                  <button
+                    onClick={content.onConfirm}
+                    disabled={confirmDisabled}
+                    style={{
+                      ...modalConfirmBtnStyle,
+                      opacity: confirmDisabled ? 0.5 : 1,
+                      cursor: confirmDisabled ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {deleteLoading ? "삭제 중..." : content.confirmLabel}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
     </div>
   );
 }
@@ -1255,6 +1416,27 @@ function GearIcon({ active }: { active?: boolean }) {
     >
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#e53e3e"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
     </svg>
   );
 }
@@ -1442,4 +1624,98 @@ const registerBtnStyle: CSSProperties = {
 const emptyTextStyle: CSSProperties = {
   fontSize: 13,
   color: "#c3cad6",
+};
+
+const modalOverlayStyle: CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(15, 20, 30, 0.5)",
+  backdropFilter: "blur(2px)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 16,
+  zIndex: 100,
+};
+
+const modalCardStyle: CSSProperties = {
+  background: "#fff",
+  borderRadius: 16,
+  padding: "28px 24px 24px",
+  width: "100%",
+  maxWidth: 360,
+  boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
+  textAlign: "center",
+};
+
+const modalIconWrapStyle: CSSProperties = {
+  width: 52,
+  height: 52,
+  borderRadius: "50%",
+  background: "#fff5f5",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  margin: "0 auto 14px",
+};
+
+const modalTitleStyle: CSSProperties = {
+  fontSize: 17,
+  fontWeight: 700,
+  color: "#1f2430",
+  margin: "0 0 8px",
+};
+
+const modalMessageStyle: CSSProperties = {
+  fontSize: 13.5,
+  color: "#6b7280",
+  lineHeight: 1.6,
+  margin: 0,
+  whiteSpace: "pre-line",
+};
+
+const modalHintStyle: CSSProperties = {
+  fontSize: 12.5,
+  color: "#8a93a3",
+  margin: "14px 0 8px",
+};
+
+const modalInputStyle: CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  border: "1px solid #d7dbe3",
+  borderRadius: 8,
+  padding: "10px 12px",
+  fontSize: 14,
+  textAlign: "center",
+  outline: "none",
+};
+
+const modalActionsStyle: CSSProperties = {
+  display: "flex",
+  gap: 8,
+  marginTop: 20,
+};
+
+const modalCancelBtnStyle: CSSProperties = {
+  flex: 1,
+  border: "1px solid #d7dbe3",
+  background: "#fff",
+  borderRadius: 10,
+  padding: "11px 0",
+  fontSize: 14,
+  fontWeight: 600,
+  color: "#4a5568",
+  cursor: "pointer",
+};
+
+const modalConfirmBtnStyle: CSSProperties = {
+  flex: 1,
+  border: "1px solid #e53e3e",
+  background: "#e53e3e",
+  borderRadius: 10,
+  padding: "11px 0",
+  fontSize: 14,
+  fontWeight: 700,
+  color: "#fff",
 };
