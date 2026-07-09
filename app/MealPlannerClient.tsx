@@ -11,6 +11,18 @@ const CATEGORIES = ["밥", "국", "반찬A", "반찬B", "반찬C", "반찬D"];
 const DAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
 const DIET_TYPES = ["일반식", "CA식", "당뇨식", "항암식"];
 
+// 컴포넌트 바깥의 일반 함수(commitMealUpdates 등)에서도 예쁜 알림 모달을 띄울 수 있도록,
+// 컴포넌트가 마운트되는 동안 알림 함수를 등록해두는 아주 작은 저장소입니다.
+type NoticeVariant = "success" | "error" | "info";
+let globalNotify: ((message: string, variant?: NoticeVariant) => void) | null = null;
+function notify(message: string, variant: NoticeVariant = "info") {
+  if (globalNotify) {
+    globalNotify(message, variant);
+  } else {
+    window.alert(message);
+  }
+}
+
 function getMonday(d: Date) {
   const date = new Date(d);
   const day = date.getDay();
@@ -81,7 +93,7 @@ async function commitMealUpdates(updates: MealUpdate[]) {
   if (!res.ok) {
     const message = await res.text().catch(() => "");
     console.error("식단 저장에 실패했습니다.", message);
-    window.alert("식단 저장에 실패했습니다. 다시 시도해주세요.");
+    notify("식단 저장에 실패했습니다. 다시 시도해주세요.", "error");
   }
 }
 
@@ -131,6 +143,24 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // 예쁜 알림 모달 상태 + 컴포넌트 바깥 함수도 쓸 수 있도록 전역 등록
+  const [notice, setNotice] = useState<{ message: string; variant: NoticeVariant } | null>(null);
+  useEffect(() => {
+    globalNotify = (message, variant = "info") => setNotice({ message, variant });
+    return () => {
+      globalNotify = null;
+    };
+  }, []);
+  // 알림 모달도 Esc 키로 닫을 수 있게 합니다.
+  useEffect(() => {
+    if (!notice) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setNotice(null);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [notice]);
 
   // 삭제 확인 모달이 열려 있을 때 Esc 키로 닫을 수 있게 합니다.
   useEffect(() => {
@@ -372,7 +402,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
     if (deletions.length === 0) {
       setDeleteModal(null);
-      alert("선택한 날짜에 등록된 내용이 없습니다.");
+      notify("선택한 날짜에 등록된 내용이 없습니다.", "info");
       return;
     }
 
@@ -386,7 +416,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     await commitMealUpdates(deletions);
     setDeleteLoading(false);
     setDeleteModal(null);
-    alert(`${label} 식단 ${deletions.length}건을 삭제했습니다.`);
+    notify(`${label} 식단 ${deletions.length}건을 삭제했습니다.`, "success");
   }
 
   // 이번 주(월~일) 전체 - 모든 식단 종류 x 끼니 x 카테고리 - 를 통째로 삭제
@@ -409,7 +439,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
     if (deletions.length === 0) {
       setDeleteModal(null);
-      alert("이번 주에 등록된 내용이 없습니다.");
+      notify("이번 주에 등록된 내용이 없습니다.", "info");
       return;
     }
 
@@ -423,7 +453,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     await commitMealUpdates(deletions);
     setDeleteLoading(false);
     setDeleteModal(null);
-    alert(`이번 주 식단 ${deletions.length}건을 삭제했습니다.`);
+    notify(`이번 주 식단 ${deletions.length}건을 삭제했습니다.`, "success");
   }
 
   // 지금까지 등록된 모든 날짜 전체 삭제 (서버에서 컬렉션 자체를 비움)
@@ -437,12 +467,12 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       if (json.ok) {
         setData({});
         setDeleteModal(null);
-        alert(`전체 ${json.deleted}건을 삭제했습니다.`);
+        notify(`전체 ${json.deleted}건을 삭제했습니다.`, "success");
       } else {
-        alert(json.message ?? "삭제에 실패했습니다.");
+        notify(json.message ?? "삭제에 실패했습니다.", "error");
       }
     } catch {
-      alert("삭제 중 오류가 발생했습니다.");
+      notify("삭제 중 오류가 발생했습니다.", "error");
     } finally {
       setDeleteLoading(false);
       setDeleteConfirmText("");
@@ -1398,6 +1428,38 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             </div>
           );
         })()}
+
+      {notice && (
+        <div
+          className="delete-modal-overlay"
+          style={modalOverlayStyle}
+          onClick={() => setNotice(null)}
+        >
+          <div
+            className="delete-modal-card"
+            style={modalCardStyle}
+            onClick={(e) => e.stopPropagation()}
+            role="alertdialog"
+            aria-modal="true"
+          >
+            <div style={noticeIconWrapStyle(notice.variant)}>
+              <NoticeIcon variant={notice.variant} />
+            </div>
+            <p style={{ ...modalMessageStyle, color: "#1f2430", fontSize: 14.5 }}>
+              {notice.message}
+            </p>
+            <div style={modalActionsStyle}>
+              <button
+                autoFocus
+                onClick={() => setNotice(null)}
+                style={noticeOkBtnStyle(notice.variant)}
+              >
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1416,6 +1478,32 @@ function GearIcon({ active }: { active?: boolean }) {
     >
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function NoticeIcon({ variant }: { variant: NoticeVariant }) {
+  if (variant === "success") {
+    return (
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2b6cb0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20 6L9 17l-5-5" />
+      </svg>
+    );
+  }
+  if (variant === "error") {
+    return (
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#e53e3e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="9" />
+        <line x1="12" y1="8" x2="12" y2="13" />
+        <line x1="12" y1="16.5" x2="12" y2="16.51" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8a93a3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="11" x2="12" y2="16" />
+      <line x1="12" y1="7.5" x2="12" y2="7.51" />
     </svg>
   );
 }
@@ -1719,3 +1807,32 @@ const modalConfirmBtnStyle: CSSProperties = {
   fontWeight: 700,
   color: "#fff",
 };
+
+function noticeIconWrapStyle(variant: NoticeVariant): CSSProperties {
+  const bg = variant === "success" ? "#eef6ff" : variant === "error" ? "#fff5f5" : "#f4f5f7";
+  return {
+    width: 52,
+    height: 52,
+    borderRadius: "50%",
+    background: bg,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    margin: "0 auto 14px",
+  };
+}
+
+function noticeOkBtnStyle(variant: NoticeVariant): CSSProperties {
+  const color = variant === "success" ? "#2b6cb0" : variant === "error" ? "#e53e3e" : "#4a5568";
+  return {
+    flex: 1,
+    border: `1px solid ${color}`,
+    background: color,
+    borderRadius: 10,
+    padding: "11px 0",
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#fff",
+    cursor: "pointer",
+  };
+}
