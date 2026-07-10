@@ -174,10 +174,10 @@ const FEEDBACK_STORAGE_KEY = "mealPlanner.myFeedback.v1";
 
 // ── 최근 등록한 메뉴 재사용(즐겨찾기 느낌) ──
 // 카테고리(밥/국/반찬A 등)별로 최근에 저장했던 메뉴명 + 영양정보 + 알레르기 정보를
-// 이 브라우저(관리자 기기)의 localStorage에 최대 8개까지 기억해두고,
-// 편집 칸에서 칩을 눌러 바로 채워 넣을 수 있게 합니다. 서버 저장과는 무관한 입력 편의 기능입니다.
+// Firestore의 "recentMenus" 컬렉션(문서 1개 = 카테고리 1개)에 최대 8개까지 기억해두고,
+// 담당자가 누구든(어느 기기든) 편집 칸에서 칩을 눌러 바로 채워 넣을 수 있게 공유합니다.
+// 읽기는 meals/feedback과 동일하게 onSnapshot 실시간 구독, 쓰기는 관리자 API 라우트를 통해서만 합니다.
 type RecentMenuEntry = { name: string; nutrition: Nutrition; allergens: string[] };
-const RECENT_MENUS_STORAGE_KEY = "mealPlanner.recentMenus.v1";
 const RECENT_MENUS_MAX = 8;
 
 async function sendFeedback(input: {
@@ -300,32 +300,76 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     }
   }, []);
 
-  // 카테고리별 "최근 등록한 메뉴" 목록 (관리자 기기의 localStorage에 저장)
+  // 카테고리별 "최근 등록한 메뉴" 목록 — Firestore "recentMenus" 컬렉션을 실시간 구독해서
+  // 담당자가 누구든(어느 기기든) 동일한 목록을 보게 합니다. (meals/feedback 구독과 동일한 패턴)
   const [recentMenus, setRecentMenus] = useState<Record<string, RecentMenuEntry[]>>({});
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(RECENT_MENUS_STORAGE_KEY);
-      if (raw) setRecentMenus(JSON.parse(raw));
-    } catch {
-      // 조용히 무시 (localStorage 접근 불가 환경 대비)
-    }
+    const unsubscribe = onSnapshot(
+      collection(db, "recentMenus"),
+      (snapshot) => {
+        const map: Record<string, RecentMenuEntry[]> = {};
+        snapshot.forEach((docSnap) => {
+          const d = docSnap.data();
+          const rawEntries = Array.isArray(d.entries) ? d.entries : [];
+          map[docSnap.id] = rawEntries
+            .filter(
+              (e: unknown): e is Record<string, unknown> =>
+                !!e && typeof e === "object" && typeof (e as Record<string, unknown>).name === "string"
+            )
+            .map((e) => ({
+              name: e.name as string,
+              nutrition: {
+                kcal: typeof e.kcal === "number" ? e.kcal : undefined,
+                protein: typeof e.protein === "number" ? e.protein : undefined,
+                sodium: typeof e.sodium === "number" ? e.sodium : undefined,
+              },
+              allergens: Array.isArray(e.allergens)
+                ? e.allergens.filter((x: unknown): x is string => typeof x === "string")
+                : [],
+            }));
+        });
+        setRecentMenus(map);
+      },
+      (err) => {
+        console.error("[recentMenus] 구독 에러:", err.code, err.message, err);
+      }
+    );
+    return () => unsubscribe();
   }, []);
 
-  // 저장 시점에 호출: 해당 카테고리의 "최근 메뉴" 목록 맨 앞에 추가(중복 이름은 제거) 후
-  // 최대 개수만큼만 남겨서 localStorage에 반영합니다.
-  function addRecentMenu(category: string, entry: RecentMenuEntry) {
-    setRecentMenus((prev) => {
-      const existing = prev[category] ?? [];
-      const withoutDup = existing.filter((m) => m.name !== entry.name);
-      const next = [entry, ...withoutDup].slice(0, RECENT_MENUS_MAX);
-      const updated = { ...prev, [category]: next };
-      try {
-        window.localStorage.setItem(RECENT_MENUS_STORAGE_KEY, JSON.stringify(updated));
-      } catch {
-        // 조용히 무시
+  // 관리자 API 라우트(/api/admin/recent-menus)를 통해 카테고리별 최근 메뉴 목록을 저장합니다.
+  async function persistRecentMenus(category: string, entries: RecentMenuEntry[]) {
+    try {
+      const res = await fetch("/api/admin/recent-menus", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category,
+          entries: entries.map((e) => ({
+            name: e.name,
+            kcal: e.nutrition.kcal,
+            protein: e.nutrition.protein,
+            sodium: e.nutrition.sodium,
+            allergens: e.allergens,
+          })),
+        }),
+      });
+      if (!res.ok) {
+        console.error("[recentMenus] 저장 실패", await res.text().catch(() => ""));
       }
-      return updated;
-    });
+    } catch (err) {
+      console.error("[recentMenus] 저장 실패", err);
+    }
+  }
+
+  // 저장 시점에 호출: 해당 카테고리의 "최근 메뉴" 목록 맨 앞에 추가(중복 이름은 제거) 후
+  // 최대 개수만큼만 남겨서 로컬 상태 반영 + 서버(Firestore)에 공유 반영합니다.
+  function addRecentMenu(category: string, entry: RecentMenuEntry) {
+    const existing = recentMenus[category] ?? [];
+    const withoutDup = existing.filter((m) => m.name !== entry.name);
+    const next = [entry, ...withoutDup].slice(0, RECENT_MENUS_MAX);
+    setRecentMenus((prev) => ({ ...prev, [category]: next }));
+    void persistRecentMenus(category, next);
   }
 
   // 최근 메뉴 칩을 클릭했을 때: 현재 편집 중인 draft/영양정보/알레르기 값을 그대로 채워 넣습니다.
