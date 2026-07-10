@@ -272,6 +272,10 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   // 삭제 메뉴(하루/이번주/전체) 열림 상태
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
+
+  // 관리자용 "피드백 모아보기" 패널: 이번 주(현재 구독 중인 주간) 범위에서
+  // 별로예요가 있거나 코멘트가 달린 항목만 모아서 한눈에 보여줍니다.
+  const [showFeedbackPanel, setShowFeedbackPanel] = useState(false);
   const [deleteModal, setDeleteModal] = useState<null | "day" | "week" | "all">(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -433,6 +437,16 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [badFeedbackModal]);
+
+  // 피드백 모아보기 패널도 Esc 키로 닫을 수 있게 합니다.
+  useEffect(() => {
+    if (!showFeedbackPanel) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowFeedbackPanel(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showFeedbackPanel]);
 
   // Firestore 실시간 구독: 현재 보고 있는 주간(월~일) 범위만 구독
   const [syncing, setSyncing] = useState(true);
@@ -689,6 +703,42 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         allergens: allergenDraft,
       });
     }
+  }
+
+  // 편집 중인 칸 하나만 삭제합니다. (상단의 하루/이번주/전체 삭제와 달리, 이 칸의 값만 지웁니다.
+  // "최근 등록한 메뉴" 목록은 건드리지 않으므로, 자주 쓰는 메뉴는 그대로 남아 재사용할 수 있습니다.)
+  function deleteCellValue(key: string, mealType: string, category: string) {
+    setData((prev) => ({ ...prev, [key]: "" }));
+    setEditingKey(null);
+    void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, "");
+  }
+
+  // "피드백 모아보기"용: 현재 구독 중인 주간(feedbackMap) 중 별로예요가 있거나
+  // 코멘트가 달린 항목만 뽑아서 날짜순으로 정리합니다.
+  function getWeekFeedbackList() {
+    const list: {
+      key: string;
+      date: Date;
+      mealType: string;
+      category: string;
+      menuName: string;
+      counts: FeedbackCounts;
+    }[] = [];
+    for (const [key, counts] of Object.entries(feedbackMap) as [string, FeedbackCounts][]) {
+      const hasBad = !!counts.bad;
+      const hasComments = !!(counts.comments && counts.comments.length > 0);
+      if (!hasBad && !hasComments) continue;
+      const parts = key.split("__");
+      if (parts.length !== 4) continue;
+      const [dateStr, , mealType, category] = parts;
+      const [y, m, d] = dateStr.split("-").map(Number);
+      if (!y || !m || !d) continue;
+      const date = new Date(y, m - 1, d);
+      const menuName = parseMealValue(data[key]).name;
+      list.push({ key, date, mealType, category, menuName, counts });
+    }
+    list.sort((a, b) => a.date.getTime() - b.date.getTime());
+    return list;
   }
 
   async function handleLogin(e: React.FormEvent) {
@@ -1496,6 +1546,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           <button onClick={handleExportExcel} style={toolbarBtnStyle}>
             엑셀로 내보내기
           </button>
+          <button onClick={() => setShowFeedbackPanel(true)} style={toolbarBtnStyle}>
+            피드백 모아보기
+          </button>
           {!bulkMode ? (
             <button onClick={enterBulkMode} style={toolbarBtnStyle}>
               빈칸 일괄 입력
@@ -1703,6 +1756,18 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                           >
                             취소
                           </button>
+                          {parsedValue.name && (
+                            <button
+                              onClick={() => {
+                                if (window.confirm("이 칸의 메뉴를 삭제할까요?")) {
+                                  deleteCellValue(key, mealType, category);
+                                }
+                              }}
+                              style={miniDeleteBtnStyle}
+                            >
+                              삭제
+                            </button>
+                          )}
                         </div>
                       </div>
                     ) : parsedValue.name ? (
@@ -1816,6 +1881,18 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                             >
                               취소
                             </button>
+                            {parsedValue.name && (
+                              <button
+                                onClick={() => {
+                                  if (window.confirm("이 칸의 메뉴를 삭제할까요?")) {
+                                    deleteCellValue(key, mealType, category);
+                                  }
+                                }}
+                                style={miniDeleteBtnStyle}
+                              >
+                                삭제
+                              </button>
+                            )}
                           </div>
                         </div>
                       ) : parsedValue.name ? (
@@ -1938,6 +2015,80 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                 style={noticeOkBtnStyle(notice.variant)}
               >
                 확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFeedbackPanel && (
+        <div
+          className="delete-modal-overlay"
+          style={modalOverlayStyle}
+          onClick={() => setShowFeedbackPanel(false)}
+        >
+          <div
+            style={feedbackPanelCardStyle}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="feedback-panel-title"
+          >
+            <h3 id="feedback-panel-title" style={modalTitleStyle}>
+              이번 주 피드백 모아보기
+            </h3>
+            {(() => {
+              const list = getWeekFeedbackList();
+              if (list.length === 0) {
+                return (
+                  <p style={{ ...modalMessageStyle, marginTop: 8 }}>
+                    이번 주엔 별로예요나 코멘트가 없어요.
+                  </p>
+                );
+              }
+              return (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 10,
+                    maxHeight: "50vh",
+                    overflowY: "auto",
+                    marginTop: 10,
+                    textAlign: "left",
+                  }}
+                >
+                  {list.map((item) => (
+                    <div key={item.key} style={feedbackItemCardStyle}>
+                      <div style={{ fontSize: 12, color: "#8a93a3" }}>
+                        {formatDate(item.date)}({DAY_LABELS[(item.date.getDay() + 6) % 7]}) ·{" "}
+                        {item.mealType} · {item.category}
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#1f2430", marginTop: 2 }}>
+                        {item.menuName || "(메뉴 없음)"}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#8a93a3", marginTop: 3 }}>
+                        {item.counts.good ? `👍${item.counts.good} ` : ""}
+                        {item.counts.bad ? `👎${item.counts.bad} ` : ""}
+                        {item.counts.leftover ? `· 잔반 ${item.counts.leftover}건` : ""}
+                      </div>
+                      {item.counts.comments && item.counts.comments.length > 0 && (
+                        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                          {item.counts.comments.map((c, idx) => (
+                            <li key={idx} style={{ fontSize: 12.5, color: "#4a5568", marginTop: 2 }}>
+                              {c}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+            <div style={modalActionsStyle}>
+              <button onClick={() => setShowFeedbackPanel(false)} style={modalCancelBtnStyle}>
+                닫기
               </button>
             </div>
           </div>
@@ -2139,6 +2290,8 @@ function NutritionInputsRow({
 }
 
 // 편집 중인 칸에서 알레르기 유발 성분을 다중 선택하는 토글 칩 목록
+// 법정 19개 항목 외에, 목록에 없는 알레르기는 점선 "+ 추가" 버튼을 눌러
+// 직접 이름을 입력해서 즉석으로 덧붙일 수 있습니다.
 function AllergenPickerRow({
   allergenDraft,
   setAllergenDraft,
@@ -2146,13 +2299,43 @@ function AllergenPickerRow({
   allergenDraft: string[];
   setAllergenDraft: Dispatch<SetStateAction<string[]>>;
 }) {
+  const [addingCustom, setAddingCustom] = useState(false);
+  const [customText, setCustomText] = useState("");
+
   function toggle(id: string) {
     setAllergenDraft((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   }
+
+  // 입력한 텍스트를 새 알레르기 항목으로 확정해서 목록 뒤에 추가합니다.
+  function commitCustom() {
+    const text = customText.trim();
+    if (text && !allergenDraft.includes(text)) {
+      setAllergenDraft((prev) => [...prev, text]);
+    }
+    setCustomText("");
+    setAddingCustom(false);
+  }
+
+  function handleCustomKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitCustom();
+    } else if (e.key === "Escape") {
+      setCustomText("");
+      setAddingCustom(false);
+    }
+  }
+
+  // 법정 19개 목록에는 없지만 이미 선택되어 있는 항목(직접 추가한 것)도 칩으로 보여줘야
+  // 다시 눌러서 해제할 수 있습니다.
+  const customEntries = allergenDraft.filter(
+    (id) => !ALLERGENS.some((a) => a.id === id)
+  );
+
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "2px 0" }}>
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "2px 0", alignItems: "center" }}>
       {ALLERGENS.map((a) => {
         const active = allergenDraft.includes(a.id);
         return (
@@ -2166,6 +2349,35 @@ function AllergenPickerRow({
           </button>
         );
       })}
+      {customEntries.map((id) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => toggle(id)}
+          style={allergenChipStyle(true)}
+        >
+          ⚠️ {id}
+        </button>
+      ))}
+      {addingCustom ? (
+        <input
+          autoFocus
+          value={customText}
+          onChange={(e) => setCustomText(e.target.value)}
+          onKeyDown={handleCustomKeyDown}
+          onBlur={commitCustom}
+          placeholder="알레르기 이름"
+          style={allergenCustomInputStyle}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAddingCustom(true)}
+          style={allergenAddChipStyle}
+        >
+          + 추가
+        </button>
+      )}
     </div>
   );
 }
@@ -2479,6 +2691,28 @@ function allergenChipStyle(active: boolean): CSSProperties {
   };
 }
 
+const allergenAddChipStyle: CSSProperties = {
+  fontSize: 11,
+  padding: "3px 7px",
+  borderRadius: 999,
+  border: "1px dashed #a0aec0",
+  background: "transparent",
+  color: "#718096",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+const allergenCustomInputStyle: CSSProperties = {
+  fontSize: 11,
+  padding: "3px 7px",
+  borderRadius: 999,
+  border: "1px dashed #dd6b20",
+  background: "#fffaf0",
+  color: "#4a5568",
+  width: 84,
+  outline: "none",
+};
+
 const recentMenuChipStyle: CSSProperties = {
   fontSize: 11,
   padding: "3px 7px",
@@ -2536,6 +2770,18 @@ const miniCancelBtnStyle: CSSProperties = {
   cursor: "pointer",
 };
 
+const miniDeleteBtnStyle: CSSProperties = {
+  flex: 1,
+  border: "1px solid #e53e3e",
+  background: "#fff",
+  color: "#e53e3e",
+  borderRadius: 6,
+  padding: "4px 0",
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
 const modalOverlayStyle: CSSProperties = {
   position: "fixed",
   inset: 0,
@@ -2556,6 +2802,23 @@ const modalCardStyle: CSSProperties = {
   maxWidth: 360,
   boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
   textAlign: "center",
+};
+
+const feedbackPanelCardStyle: CSSProperties = {
+  background: "#fff",
+  borderRadius: 16,
+  padding: "24px 22px",
+  width: "100%",
+  maxWidth: 480,
+  boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
+  textAlign: "center",
+};
+
+const feedbackItemCardStyle: CSSProperties = {
+  border: "1px solid #e2e5ea",
+  borderRadius: 10,
+  padding: "10px 12px",
+  background: "#f9fafb",
 };
 
 const modalIconWrapStyle: CSSProperties = {
