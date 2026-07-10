@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useEffect, type CSSProperties } from "react";
+import {
+  useState,
+  useEffect,
+  type CSSProperties,
+  type Dispatch,
+  type SetStateAction,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import { db } from "@/lib/firebase";
@@ -64,6 +71,91 @@ function buildKey(d: Date, diet: string, mealType: string, category: string) {
   return `${dateKey(d)}__${diet}__${mealType}__${category}`;
 }
 
+// ── 영양 정보 + 알레르기 유발 성분 ──
+// Firestore의 "value" 필드는 그대로 문자열이지만, 영양 정보/알레르기 정보가 있는 칸은
+// 그 문자열 안에 JSON을 담아 저장합니다:
+// {"n":"메뉴명","kcal":320,"protein":8,"sodium":450,"aller":["egg","milk"]}
+// 아무 정보도 없는 칸(과거 데이터 포함)은 그냥 일반 텍스트 메뉴명 그대로 둡니다.
+type Nutrition = { kcal?: number; protein?: number; sodium?: number };
+type ParsedMeal = { name: string; nutrition: Nutrition; allergens: string[] };
+
+// 식품위생법상 표시 대상 알레르기 유발 성분 (식약처 고시 기준, 19개 항목)
+const ALLERGENS: { id: string; label: string; icon: string }[] = [
+  { id: "egg", label: "계란", icon: "🥚" },
+  { id: "milk", label: "우유", icon: "🥛" },
+  { id: "buckwheat", label: "메밀", icon: "🌾" },
+  { id: "peanut", label: "땅콩", icon: "🥜" },
+  { id: "soy", label: "대두", icon: "🫘" },
+  { id: "wheat", label: "밀", icon: "🍞" },
+  { id: "mackerel", label: "고등어", icon: "🐟" },
+  { id: "crab", label: "게", icon: "🦀" },
+  { id: "shrimp", label: "새우", icon: "🦐" },
+  { id: "pork", label: "돼지고기", icon: "🐷" },
+  { id: "peach", label: "복숭아", icon: "🍑" },
+  { id: "tomato", label: "토마토", icon: "🍅" },
+  { id: "sulfite", label: "아황산류", icon: "🧪" },
+  { id: "walnut", label: "호두", icon: "🌰" },
+  { id: "chicken", label: "닭고기", icon: "🐔" },
+  { id: "beef", label: "쇠고기", icon: "🐮" },
+  { id: "squid", label: "오징어", icon: "🦑" },
+  { id: "shellfish", label: "조개류", icon: "🐚" },
+  { id: "pinenut", label: "잣", icon: "🌲" },
+];
+
+function getAllergenMeta(id: string) {
+  return ALLERGENS.find((a) => a.id === id) ?? { id, label: id, icon: "⚠️" };
+}
+
+function parseMealValue(raw?: string): ParsedMeal {
+  if (!raw) return { name: "", nutrition: {}, allergens: [] };
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === "object" && typeof obj.n === "string") {
+        return {
+          name: obj.n,
+          nutrition: {
+            kcal: typeof obj.kcal === "number" ? obj.kcal : undefined,
+            protein: typeof obj.protein === "number" ? obj.protein : undefined,
+            sodium: typeof obj.sodium === "number" ? obj.sodium : undefined,
+          },
+          allergens: Array.isArray(obj.aller)
+            ? obj.aller.filter((x: unknown): x is string => typeof x === "string")
+            : [],
+        };
+      }
+    } catch {
+      // JSON 파싱에 실패하면 그냥 평범한 텍스트로 취급합니다.
+    }
+  }
+  return { name: raw, nutrition: {}, allergens: [] };
+}
+
+function serializeMealValue(name: string, nutrition: Nutrition, allergens: string[] = []): string {
+  const trimmedName = name.trim();
+  const hasNutrition =
+    nutrition.kcal !== undefined ||
+    nutrition.protein !== undefined ||
+    nutrition.sodium !== undefined;
+  const hasAllergens = allergens.length > 0;
+  if (!hasNutrition && !hasAllergens) return trimmedName;
+  const payload: Record<string, unknown> = { n: trimmedName };
+  if (nutrition.kcal !== undefined) payload.kcal = nutrition.kcal;
+  if (nutrition.protein !== undefined) payload.protein = nutrition.protein;
+  if (nutrition.sodium !== undefined) payload.sodium = nutrition.sodium;
+  if (hasAllergens) payload.aller = allergens;
+  return JSON.stringify(payload);
+}
+
+function formatNutritionLine(nutrition: Nutrition): string {
+  const parts: string[] = [];
+  if (nutrition.kcal !== undefined) parts.push(`${nutrition.kcal}kcal`);
+  if (nutrition.protein !== undefined) parts.push(`단백질 ${nutrition.protein}g`);
+  if (nutrition.sodium !== undefined) parts.push(`나트륨 ${nutrition.sodium}mg`);
+  return parts.join(" · ");
+}
+
 type MealUpdate = {
   key: string;
   date: Date;
@@ -72,6 +164,43 @@ type MealUpdate = {
   category: string;
   value: string;
 };
+
+// ── 선호도(좋아요/별로예요) + 잔반 체크 ──
+// 서버 집계는 Firestore의 "feedback" 컬렉션(문서 1개 = meals와 동일한 key)에 누적 카운트로 저장됩니다.
+// 브라우저는 "이 기기에서 이미 무엇을 눌렀는지"만 localStorage에 기억해서 중복 집계를 막습니다.
+type FeedbackCounts = { good?: number; bad?: number; leftover?: number; comments?: string[] };
+type UserFeedbackState = { rating?: "good" | "bad"; leftover?: boolean };
+const FEEDBACK_STORAGE_KEY = "mealPlanner.myFeedback.v1";
+
+async function sendFeedback(input: {
+  key: string;
+  date: Date;
+  diet: string;
+  mealType: string;
+  category: string;
+  kind: "good" | "bad" | "leftover";
+  delta: 1 | -1;
+  comment?: string;
+}) {
+  try {
+    await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: input.key,
+        date: toISODate(input.date),
+        diet: input.diet,
+        mealType: input.mealType,
+        category: input.category,
+        kind: input.kind,
+        delta: input.delta,
+        comment: input.comment,
+      }),
+    });
+  } catch (err) {
+    console.error("[feedback] 전송 실패", err);
+  }
+}
 
 // 여러 칸을 한 번에 저장 — 서버 라우트(/api/admin/meals)를 거쳐서 저장함
 // (관리자 쿠키 검증은 서버에서 하고, 실제 Firestore 쓰기는 firebase-admin이 담당)
@@ -118,6 +247,13 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   const [data, setData] = useState<Record<string, string>>({});
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  // 편집 중인 칸의 영양 정보 초안 (문자열 입력값 그대로 보관, 저장 시 숫자로 변환)
+  const [nutritionDraft, setNutritionDraft] = useState<{
+    kcal: string;
+    protein: string;
+    sodium: string;
+  }>({ kcal: "", protein: "", sodium: "" });
+  const [allergenDraft, setAllergenDraft] = useState<string[]>([]);
 
   // 로그인 관련 상태
   const [showLogin, setShowLogin] = useState(false);
@@ -142,6 +278,18 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  // 선호도/잔반 피드백: 서버 집계(feedbackMap)와 "이 기기에서 내가 누른 것"(userFeedback)
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, FeedbackCounts>>({});
+  const [userFeedback, setUserFeedback] = useState<Record<string, UserFeedbackState>>({});
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(FEEDBACK_STORAGE_KEY);
+      if (raw) setUserFeedback(JSON.parse(raw));
+    } catch {
+      // localStorage를 못 읽어도(시크릿 모드 등) 기능이 죽지 않도록 조용히 무시합니다.
+    }
   }, []);
 
   // 예쁜 알림 모달 상태 + 컴포넌트 바깥 함수도 쓸 수 있도록 전역 등록
@@ -238,6 +386,42 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     return () => unsubscribe();
   }, [weekStart]);
 
+  // Firestore 실시간 구독: 선호도/잔반 집계(feedback 컬렉션) — 식단 구독과 동일한 주간 범위
+  useEffect(() => {
+    const startISO = toISODate(weekStart);
+    const weekEndForQuery = new Date(weekStart);
+    weekEndForQuery.setDate(weekStart.getDate() + 6);
+    const endISO = toISODate(weekEndForQuery);
+
+    const q = query(
+      collection(db, "feedback"),
+      where("date", ">=", startISO),
+      where("date", "<=", endISO)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const map: Record<string, FeedbackCounts> = {};
+        snapshot.forEach((docSnap) => {
+          const d = docSnap.data();
+          map[docSnap.id] = {
+            good: typeof d.good === "number" ? d.good : undefined,
+            bad: typeof d.bad === "number" ? d.bad : undefined,
+            leftover: typeof d.leftover === "number" ? d.leftover : undefined,
+            comments: Array.isArray(d.comments) ? d.comments : undefined,
+          };
+        });
+        setFeedbackMap(map);
+      },
+      (err) => {
+        console.error("[feedback] 구독 에러:", err.code, err.message, err);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [weekStart]);
+
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(weekStart);
     d.setDate(weekStart.getDate() + i);
@@ -265,16 +449,89 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     return buildKey(selectedDate, selectedDiet, mealType, category);
   }
 
+  function persistUserFeedback(next: Record<string, UserFeedbackState>) {
+    setUserFeedback(next);
+    try {
+      window.localStorage.setItem(FEEDBACK_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // 저장 실패해도 화면 상태는 이미 반영됐으니 무시합니다.
+    }
+  }
+
+  // 좋아요/별로예요는 서로 배타적인 단일 선택입니다. 같은 걸 다시 누르면 선택을 취소합니다.
+  function toggleRating(
+    key: string,
+    mealType: string,
+    category: string,
+    rating: "good" | "bad"
+  ) {
+    const current = userFeedback[key]?.rating;
+    if (current === rating) {
+      void sendFeedback({ key, date: selectedDate, diet: selectedDiet, mealType, category, kind: rating, delta: -1 });
+      persistUserFeedback({ ...userFeedback, [key]: { ...userFeedback[key], rating: undefined } });
+      return;
+    }
+    let comment: string | undefined;
+    if (rating === "bad" && typeof window !== "undefined") {
+      comment = window.prompt("어떤 점이 별로였는지 간단히 남겨주시겠어요? (선택 사항)") ?? undefined;
+    }
+    if (current) {
+      void sendFeedback({ key, date: selectedDate, diet: selectedDiet, mealType, category, kind: current, delta: -1 });
+    }
+    void sendFeedback({ key, date: selectedDate, diet: selectedDiet, mealType, category, kind: rating, delta: 1, comment });
+    persistUserFeedback({ ...userFeedback, [key]: { ...userFeedback[key], rating } });
+  }
+
+  // 잔반 체크는 좋아요/별로예요와 독립적인 토글입니다.
+  function toggleLeftover(key: string, mealType: string, category: string) {
+    const wasChecked = !!userFeedback[key]?.leftover;
+    void sendFeedback({
+      key,
+      date: selectedDate,
+      diet: selectedDiet,
+      mealType,
+      category,
+      kind: "leftover",
+      delta: wasChecked ? -1 : 1,
+    });
+    persistUserFeedback({ ...userFeedback, [key]: { ...userFeedback[key], leftover: !wasChecked } });
+  }
+
   function startEdit(mealType: string, category: string) {
     if (!isAdmin) return;
     const key = cellKey(mealType, category);
+    const parsed = parseMealValue(data[key]);
     setEditingKey(key);
-    setDraft(data[key] ?? "");
+    setDraft(parsed.name);
+    setNutritionDraft({
+      kcal: parsed.nutrition.kcal !== undefined ? String(parsed.nutrition.kcal) : "",
+      protein: parsed.nutrition.protein !== undefined ? String(parsed.nutrition.protein) : "",
+      sodium: parsed.nutrition.sodium !== undefined ? String(parsed.nutrition.sodium) : "",
+    });
+    setAllergenDraft(parsed.allergens);
   }
 
-  function saveEdit(key: string) {
-    setData((prev) => ({ ...prev, [key]: draft.trim() }));
+  // 현재 draft(메뉴명) + nutritionDraft(칼로리/단백질/나트륨) + allergenDraft(알레르기)를
+  // 하나의 저장용 문자열로 합칩니다.
+  function buildSerializedDraft(): string {
+    const nutrition: Nutrition = {};
+    const kcalNum = Number(nutritionDraft.kcal);
+    if (nutritionDraft.kcal.trim() !== "" && !Number.isNaN(kcalNum)) nutrition.kcal = kcalNum;
+    const proteinNum = Number(nutritionDraft.protein);
+    if (nutritionDraft.protein.trim() !== "" && !Number.isNaN(proteinNum))
+      nutrition.protein = proteinNum;
+    const sodiumNum = Number(nutritionDraft.sodium);
+    if (nutritionDraft.sodium.trim() !== "" && !Number.isNaN(sodiumNum))
+      nutrition.sodium = sodiumNum;
+    return serializeMealValue(draft, nutrition, allergenDraft);
+  }
+
+  // 한 칸의 편집을 확정(저장)합니다: 로컬 상태 반영 + 서버에 저장 + 편집 모드 종료
+  function commitCellEdit(key: string, mealType: string, category: string) {
+    const serialized = buildSerializedDraft();
+    setData((prev) => ({ ...prev, [key]: serialized }));
     setEditingKey(null);
+    void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, serialized);
   }
 
   async function handleLogin(e: React.FormEvent) {
@@ -548,7 +805,17 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       for (const mealType of MEAL_TYPES) {
         const rowValues = CATEGORIES.map((category) => {
           const key = buildKey(d, selectedDiet, mealType, category);
-          return data[key] ?? "";
+          const parsed = parseMealValue(data[key]);
+          if (!parsed.name) return "";
+          const details: string[] = [];
+          const nutritionLine = formatNutritionLine(parsed.nutrition);
+          if (nutritionLine) details.push(nutritionLine);
+          if (parsed.allergens.length > 0) {
+            details.push(
+              `알레르기: ${parsed.allergens.map((id) => getAllergenMeta(id).label).join(", ")}`
+            );
+          }
+          return details.length > 0 ? `${parsed.name} (${details.join(" / ")})` : parsed.name;
         });
         rows.push([mealType, ...rowValues]);
       }
@@ -579,14 +846,21 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     return keys;
   }
 
+  // 일괄 입력 모드는 메뉴명(텍스트)만 다룹니다. 영양 정보가 이미 등록되어 있던 칸은
+  // 이름만 바뀌어도 기존 영양 정보를 그대로 유지합니다(저장 시 병합).
   function bulkDirtyCount() {
-    return currentViewKeys().filter((key) => (bulkDraft[key] ?? "") !== (data[key] ?? ""))
-      .length;
+    return currentViewKeys().filter(
+      (key) => (bulkDraft[key] ?? "") !== parseMealValue(data[key]).name
+    ).length;
   }
 
   function enterBulkMode() {
     setEditingKey(null); // 기존 단일 편집 중이던 칸이 있으면 닫기
-    setBulkDraft({ ...data });
+    const names: Record<string, string> = {};
+    for (const key of Object.keys(data)) {
+      names[key] = parseMealValue(data[key]).name;
+    }
+    setBulkDraft(names);
     setBulkMode(true);
   }
 
@@ -611,8 +885,11 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   for (const mealType of MEAL_TYPES) {
     for (const category of CATEGORIES) {
       const key = cellKey(mealType, category);
-      const nextValue = bulkDraft[key] ?? "";
-      if (nextValue !== (data[key] ?? "")) {
+      const nextName = bulkDraft[key] ?? "";
+      const current = parseMealValue(data[key]);
+      if (nextName !== current.name) {
+        // 이름만 바꾸고, 기존에 등록돼 있던 영양 정보는 그대로 유지해서 합칩니다.
+        const nextValue = serializeMealValue(nextName, current.nutrition, current.allergens);
         updates.push({ key, date: selectedDate, diet: selectedDiet, mealType, category, value: nextValue });
         changedMap[key] = nextValue;
       }
@@ -626,7 +903,11 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 }
 
   function revertBulkDraft() {
-    setBulkDraft({ ...data });
+    const names: Record<string, string> = {};
+    for (const key of Object.keys(data)) {
+      names[key] = parseMealValue(data[key]).name;
+    }
+    setBulkDraft(names);
   }
 
   if (!mounted) {
@@ -1214,47 +1495,65 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                   );
                 }
 
-                // 기존 등록/수정 로직 — 변경 없음
-                const value = data[key];
+                // 기존 등록/수정 로직 — 메뉴명 + 영양 정보(칼로리/단백질/나트륨) 편집 포함
+                const parsedValue = parseMealValue(data[key]);
                 const isEditing = editingKey === key;
                 return (
                   <td key={category} style={tdStyle}>
                     {isEditing ? (
-                      <input
-                        autoFocus
-                        value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
-                        onBlur={() => {
-                          saveEdit(key);
-                          void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, draft);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            saveEdit(key);
-                            void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, draft);
-                          }
-                          if (e.key === "Escape") setEditingKey(null);
-                        }}
-                        style={{
-                          width: "100%",
-                          padding: "6px 8px",
-                          border: "1px solid #2b6cb0",
-                          borderRadius: 6,
-                          fontSize: 13,
-                          boxSizing: "border-box",
-                        }}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <input
+                          autoFocus
+                          value={draft}
+                          placeholder="메뉴명"
+                          onChange={(e) => setDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitCellEdit(key, mealType, category);
+                            if (e.key === "Escape") setEditingKey(null);
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            border: "1px solid #2b6cb0",
+                            borderRadius: 6,
+                            fontSize: 13,
+                            boxSizing: "border-box",
+                          }}
+                        />
+                        <NutritionInputsRow
+                          nutritionDraft={nutritionDraft}
+                          setNutritionDraft={setNutritionDraft}
+                          onEnter={() => commitCellEdit(key, mealType, category)}
+                        />
+                        <AllergenPickerRow
+                          allergenDraft={allergenDraft}
+                          setAllergenDraft={setAllergenDraft}
+                        />
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button
+                            onClick={() => commitCellEdit(key, mealType, category)}
+                            style={miniSaveBtnStyle}
+                          >
+                            저장
+                          </button>
+                          <button
+                            onClick={() => setEditingKey(null)}
+                            style={miniCancelBtnStyle}
+                          >
+                            취소
+                          </button>
+                        </div>
+                      </div>
+                    ) : parsedValue.name ? (
+                      <MealCellDisplay
+                        parsed={parsedValue}
+                        isAdmin={isAdmin}
+                        onClick={() => startEdit(mealType, category)}
+                        feedback={feedbackMap[key]}
+                        myFeedback={userFeedback[key]}
+                        onToggleRating={(rating) => toggleRating(key, mealType, category, rating)}
+                        onToggleLeftover={() => toggleLeftover(key, mealType, category)}
                       />
-                    ) : value ? (
-                      isAdmin ? (
-                        <button
-                          onClick={() => startEdit(mealType, category)}
-                          style={valueBtnStyle}
-                        >
-                          {value}
-                        </button>
-                      ) : (
-                        <span style={valueTextStyle}>{value}</span>
-                      )
                     ) : isAdmin ? (
                       <button
                         onClick={() => startEdit(mealType, category)}
@@ -1291,61 +1590,80 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             >
               {CATEGORIES.map((category, idx) => {
                 const key = cellKey(mealType, category);
-                const value = data[key];
+                const parsedValue = parseMealValue(data[key]);
                 const isEditing = editingKey === key;
                 return (
                   <div
                     key={category}
                     style={{
                       display: "flex",
-                      alignItems: "center",
+                      alignItems: isEditing ? "flex-start" : "center",
                       justifyContent: "space-between",
                       gap: 10,
                       padding: "10px 12px",
                       borderTop: idx === 0 ? "none" : "1px solid #f0f2f5",
                     }}
                   >
-                    <span style={{ fontSize: 13, color: "#8a93a3", flexShrink: 0, minWidth: 56 }}>
+                    <span style={{ fontSize: 13, color: "#8a93a3", flexShrink: 0, minWidth: 56, marginTop: isEditing ? 6 : 0 }}>
                       {category}
                     </span>
                     <div style={{ flex: 1, textAlign: "right" }}>
                       {isEditing ? (
-                        <input
-                          autoFocus
-                          value={draft}
-                          onChange={(e) => setDraft(e.target.value)}
-                          onBlur={() => {
-                            saveEdit(key);
-                            void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, draft);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              saveEdit(key);
-                              void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, draft);
-                            }
-                            if (e.key === "Escape") setEditingKey(null);
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 8px",
-                            border: "1px solid #2b6cb0",
-                            borderRadius: 6,
-                            fontSize: 13,
-                            boxSizing: "border-box",
-                            textAlign: "right",
-                          }}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          <input
+                            autoFocus
+                            value={draft}
+                            placeholder="메뉴명"
+                            onChange={(e) => setDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitCellEdit(key, mealType, category);
+                              if (e.key === "Escape") setEditingKey(null);
+                            }}
+                            style={{
+                              width: "100%",
+                              padding: "6px 8px",
+                              border: "1px solid #2b6cb0",
+                              borderRadius: 6,
+                              fontSize: 13,
+                              boxSizing: "border-box",
+                              textAlign: "right",
+                            }}
+                          />
+                          <NutritionInputsRow
+                            nutritionDraft={nutritionDraft}
+                            setNutritionDraft={setNutritionDraft}
+                            onEnter={() => commitCellEdit(key, mealType, category)}
+                          />
+                          <AllergenPickerRow
+                            allergenDraft={allergenDraft}
+                            setAllergenDraft={setAllergenDraft}
+                          />
+                          <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                            <button
+                              onClick={() => commitCellEdit(key, mealType, category)}
+                              style={miniSaveBtnStyle}
+                            >
+                              저장
+                            </button>
+                            <button
+                              onClick={() => setEditingKey(null)}
+                              style={miniCancelBtnStyle}
+                            >
+                              취소
+                            </button>
+                          </div>
+                        </div>
+                      ) : parsedValue.name ? (
+                        <MealCellDisplay
+                          parsed={parsedValue}
+                          isAdmin={isAdmin}
+                          onClick={() => startEdit(mealType, category)}
+                          align="right"
+                          feedback={feedbackMap[key]}
+                          myFeedback={userFeedback[key]}
+                          onToggleRating={(rating) => toggleRating(key, mealType, category, rating)}
+                          onToggleLeftover={() => toggleLeftover(key, mealType, category)}
                         />
-                      ) : value ? (
-                        isAdmin ? (
-                          <button
-                            onClick={() => startEdit(mealType, category)}
-                            style={{ ...valueBtnStyle, width: "auto" }}
-                          >
-                            {value}
-                          </button>
-                        ) : (
-                          <span style={valueTextStyle}>{value}</span>
-                        )
                       ) : isAdmin ? (
                         <button
                           onClick={() => startEdit(mealType, category)}
@@ -1460,6 +1778,183 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// 메뉴명 + (있다면) 영양 정보/알레르기 정보를 함께 보여주는 표시용 컴포넌트
+function MealCellDisplay({
+  parsed,
+  isAdmin,
+  onClick,
+  align = "left",
+  feedback,
+  myFeedback,
+  onToggleRating,
+  onToggleLeftover,
+}: {
+  parsed: ParsedMeal;
+  isAdmin: boolean;
+  onClick: () => void;
+  align?: "left" | "right";
+  feedback?: FeedbackCounts;
+  myFeedback?: UserFeedbackState;
+  onToggleRating?: (rating: "good" | "bad") => void;
+  onToggleLeftover?: () => void;
+}) {
+  const nutritionLine = formatNutritionLine(parsed.nutrition);
+  const nameEl = isAdmin ? (
+    <button onClick={onClick} style={{ ...valueBtnStyle, width: align === "right" ? "auto" : "100%" }}>
+      {parsed.name}
+    </button>
+  ) : (
+    <span style={valueTextStyle}>{parsed.name}</span>
+  );
+  return (
+    <div style={{ textAlign: align }}>
+      {nameEl}
+      {nutritionLine && (
+        <div style={{ ...nutritionLineStyle, textAlign: align }}>{nutritionLine}</div>
+      )}
+      {parsed.allergens.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 3,
+            marginTop: 3,
+            justifyContent: align === "right" ? "flex-end" : "flex-start",
+          }}
+        >
+          {parsed.allergens.map((id) => {
+            const meta = getAllergenMeta(id);
+            return (
+              <span key={id} title={`알레르기 유발 성분: ${meta.label}`} style={allergenBadgeStyle}>
+                {meta.icon} {meta.label}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 관리자는 집계된 선호도/잔반 통계를 확인 — 개선에 참고 자료로 씀 */}
+      {isAdmin && feedback && (feedback.good || feedback.bad || feedback.leftover) ? (
+        <div style={{ ...nutritionLineStyle, textAlign: align, color: "#8a93a3" }}>
+          {feedback.good ? `👍${feedback.good}` : null}
+          {feedback.bad ? ` 👎${feedback.bad}` : null}
+          {feedback.leftover ? ` · 잔반 ${feedback.leftover}건` : null}
+        </div>
+      ) : null}
+
+      {/* 환자/보호자는 선호도(좋아요/별로예요) + 잔반 여부를 직접 남길 수 있음 */}
+      {!isAdmin && onToggleRating && onToggleLeftover && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 3,
+            marginTop: 4,
+            justifyContent: align === "right" ? "flex-end" : "flex-start",
+          }}
+        >
+          <button
+            onClick={() => onToggleRating("good")}
+            style={feedbackBtnStyle(myFeedback?.rating === "good")}
+          >
+            🙂 좋아요
+          </button>
+          <button
+            onClick={() => onToggleRating("bad")}
+            style={feedbackBtnStyle(myFeedback?.rating === "bad")}
+          >
+            🙁 별로예요
+          </button>
+          <button
+            onClick={onToggleLeftover}
+            style={feedbackBtnStyle(!!myFeedback?.leftover)}
+          >
+            🍽️ 잔반 많음
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 편집 중인 칸에서 칼로리/단백질/나트륨을 입력하는 3개 입력창
+function NutritionInputsRow({
+  nutritionDraft,
+  setNutritionDraft,
+  onEnter,
+}: {
+  nutritionDraft: { kcal: string; protein: string; sodium: string };
+  setNutritionDraft: Dispatch<SetStateAction<{ kcal: string; protein: string; sodium: string }>>;
+  onEnter: () => void;
+}) {
+  function handleKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") onEnter();
+  }
+  return (
+    <div style={{ display: "flex", gap: 4 }}>
+      <input
+        type="number"
+        inputMode="numeric"
+        value={nutritionDraft.kcal}
+        placeholder="kcal"
+        onChange={(e) => setNutritionDraft((prev) => ({ ...prev, kcal: e.target.value }))}
+        onKeyDown={handleKeyDown}
+        style={nutritionInputStyle}
+      />
+      <input
+        type="number"
+        inputMode="numeric"
+        value={nutritionDraft.protein}
+        placeholder="단백질(g)"
+        onChange={(e) => setNutritionDraft((prev) => ({ ...prev, protein: e.target.value }))}
+        onKeyDown={handleKeyDown}
+        style={nutritionInputStyle}
+      />
+      <input
+        type="number"
+        inputMode="numeric"
+        value={nutritionDraft.sodium}
+        placeholder="나트륨(mg)"
+        onChange={(e) => setNutritionDraft((prev) => ({ ...prev, sodium: e.target.value }))}
+        onKeyDown={handleKeyDown}
+        style={nutritionInputStyle}
+      />
+    </div>
+  );
+}
+
+// 편집 중인 칸에서 알레르기 유발 성분을 다중 선택하는 토글 칩 목록
+function AllergenPickerRow({
+  allergenDraft,
+  setAllergenDraft,
+}: {
+  allergenDraft: string[];
+  setAllergenDraft: Dispatch<SetStateAction<string[]>>;
+}) {
+  function toggle(id: string) {
+    setAllergenDraft((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "2px 0" }}>
+      {ALLERGENS.map((a) => {
+        const active = allergenDraft.includes(a.id);
+        return (
+          <button
+            key={a.id}
+            type="button"
+            onClick={() => toggle(a.id)}
+            style={allergenChipStyle(active)}
+          >
+            {a.icon} {a.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1712,6 +2207,85 @@ const registerBtnStyle: CSSProperties = {
 const emptyTextStyle: CSSProperties = {
   fontSize: 13,
   color: "#c3cad6",
+};
+
+const nutritionLineStyle: CSSProperties = {
+  fontSize: 11,
+  color: "#8a93a3",
+  marginTop: 2,
+  lineHeight: 1.4,
+};
+
+const allergenBadgeStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 2,
+  fontSize: 10,
+  color: "#c05621",
+  background: "#fffaf0",
+  border: "1px solid #feebc8",
+  borderRadius: 999,
+  padding: "1px 6px",
+  whiteSpace: "nowrap",
+};
+
+function allergenChipStyle(active: boolean): CSSProperties {
+  return {
+    fontSize: 11,
+    padding: "3px 7px",
+    borderRadius: 999,
+    border: active ? "1px solid #dd6b20" : "1px solid #d7dbe3",
+    background: active ? "#feebc8" : "#fff",
+    color: active ? "#9c4221" : "#4a5568",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  };
+}
+
+function feedbackBtnStyle(active: boolean): CSSProperties {
+  return {
+    fontSize: 11,
+    padding: "3px 7px",
+    borderRadius: 999,
+    border: active ? "1px solid #2b6cb0" : "1px solid #d7dbe3",
+    background: active ? "#ebf4ff" : "#fff",
+    color: active ? "#2b6cb0" : "#8a93a3",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  };
+}
+
+const nutritionInputStyle: CSSProperties = {
+  width: "100%",
+  minWidth: 0,
+  padding: "5px 6px",
+  border: "1px solid #d7dbe3",
+  borderRadius: 6,
+  fontSize: 12,
+  boxSizing: "border-box",
+};
+
+const miniSaveBtnStyle: CSSProperties = {
+  flex: 1,
+  border: "1px solid #2b6cb0",
+  background: "#2b6cb0",
+  color: "#fff",
+  borderRadius: 6,
+  padding: "4px 0",
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
+const miniCancelBtnStyle: CSSProperties = {
+  flex: 1,
+  border: "1px solid #d7dbe3",
+  background: "#fff",
+  color: "#4a5568",
+  borderRadius: 6,
+  padding: "4px 0",
+  fontSize: 12,
+  cursor: "pointer",
 };
 
 const modalOverlayStyle: CSSProperties = {
