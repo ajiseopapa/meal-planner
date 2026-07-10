@@ -7,11 +7,12 @@ import {
   type Dispatch,
   type SetStateAction,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import { db } from "@/lib/firebase";
-import { collection, onSnapshot, query, where } from "firebase/firestore";
+import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 
 const MEAL_TYPES = ["조식", "중식", "석식", "간식"];
 const CATEGORIES = ["밥", "국", "반찬A", "반찬B", "반찬C", "반찬D"];
@@ -386,6 +387,61 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       sodium: entry.nutrition.sodium !== undefined ? String(entry.nutrition.sodium) : "",
     });
     setAllergenDraft(entry.allergens);
+  }
+
+  // ── 직접 추가한 알레르기 이름 목록(법정 19개 외) ──
+  // Firestore의 "customAllergens/list" 문서 하나에 labels: string[]로 통째로 저장해서
+  // 누가 어느 기기에서 추가하든 모든 사용자의 알레르기 선택 목록에 함께 보이게 합니다.
+  // 읽기는 다른 컬렉션들과 동일하게 onSnapshot 실시간 구독, 쓰기는 관리자 API 라우트를 통해서만 합니다.
+  const [customAllergens, setCustomAllergens] = useState<string[]>([]);
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      doc(db, "customAllergens", "list"),
+      (docSnap) => {
+        const raw = docSnap.data()?.labels;
+        setCustomAllergens(
+          Array.isArray(raw) ? raw.filter((x: unknown): x is string => typeof x === "string") : []
+        );
+      },
+      (err) => {
+        console.error("[customAllergens] 구독 에러:", err.code, err.message, err);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  // 관리자 API 라우트(/api/admin/allergens)를 통해 커스텀 알레르기 목록 전체를 덮어써서 저장합니다.
+  async function persistCustomAllergens(labels: string[]) {
+    try {
+      const res = await fetch("/api/admin/allergens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ labels }),
+      });
+      if (!res.ok) {
+        console.error("[customAllergens] 저장 실패", await res.text().catch(() => ""));
+        notify("알레르기 항목 저장에 실패했습니다. 다시 시도해주세요.", "error");
+      }
+    } catch (err) {
+      console.error("[customAllergens] 저장 실패", err);
+      notify("알레르기 항목 저장에 실패했습니다. 다시 시도해주세요.", "error");
+    }
+  }
+
+  // 새 알레르기 이름을 목록 뒤에 추가(중복이면 무시) — 로컬 상태 반영 + 서버(Firestore)에 공유 반영
+  function addCustomAllergen(label: string) {
+    const trimmed = label.trim();
+    if (!trimmed || customAllergens.includes(trimmed)) return;
+    const next = [...customAllergens, trimmed];
+    setCustomAllergens(next);
+    void persistCustomAllergens(next);
+  }
+
+  // 목록에서 알레르기 이름을 제거 — 로컬 상태 반영 + 서버(Firestore)에 공유 반영
+  function deleteCustomAllergen(label: string) {
+    const next = customAllergens.filter((l) => l !== label);
+    setCustomAllergens(next);
+    void persistCustomAllergens(next);
   }
 
   // 예쁜 알림 모달 상태 + 컴포넌트 바깥 함수도 쓸 수 있도록 전역 등록
@@ -1742,6 +1798,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                         <AllergenPickerRow
                           allergenDraft={allergenDraft}
                           setAllergenDraft={setAllergenDraft}
+                          customAllergens={customAllergens}
+                          onAddCustomAllergen={addCustomAllergen}
+                          onDeleteCustomAllergen={deleteCustomAllergen}
                         />
                         <div style={{ display: "flex", gap: 4 }}>
                           <button
@@ -1867,6 +1926,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                           <AllergenPickerRow
                             allergenDraft={allergenDraft}
                             setAllergenDraft={setAllergenDraft}
+                            customAllergens={customAllergens}
+                            onAddCustomAllergen={addCustomAllergen}
+                            onDeleteCustomAllergen={deleteCustomAllergen}
                           />
                           <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
                             <button
@@ -2042,7 +2104,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
               if (list.length === 0) {
                 return (
                   <p style={{ ...modalMessageStyle, marginTop: 8 }}>
-                    이번 주엔 코멘트가 없어요.
+                    이번 주엔 별로예요나 코멘트가 없어요.
                   </p>
                 );
               }
@@ -2290,17 +2352,27 @@ function NutritionInputsRow({
 }
 
 // 편집 중인 칸에서 알레르기 유발 성분을 다중 선택하는 토글 칩 목록
-// 법정 19개 항목 외에, 목록에 없는 알레르기는 점선 "+ 추가" 버튼을 눌러
-// 직접 이름을 입력해서 즉석으로 덧붙일 수 있습니다.
+// 법정 19개 항목 + 모든 사용자가 공유하는 "직접 추가한 알레르기" 목록을 함께 보여줍니다.
+// 점선 "+ 추가" 버튼으로 새 항목을 입력하면 공유 목록에 저장되고, 직접 추가한 항목은
+// 우클릭(컨텍스트 메뉴)으로 삭제 여부를 물어본 뒤 공유 목록에서 완전히 제거할 수 있습니다.
+// (법정 19개 항목은 삭제 대상이 아니라서 우클릭 메뉴가 뜨지 않습니다)
 function AllergenPickerRow({
   allergenDraft,
   setAllergenDraft,
+  customAllergens,
+  onAddCustomAllergen,
+  onDeleteCustomAllergen,
 }: {
   allergenDraft: string[];
   setAllergenDraft: Dispatch<SetStateAction<string[]>>;
+  customAllergens: string[];
+  onAddCustomAllergen: (label: string) => void;
+  onDeleteCustomAllergen: (label: string) => void;
 }) {
   const [addingCustom, setAddingCustom] = useState(false);
   const [customText, setCustomText] = useState("");
+  // 우클릭으로 삭제를 확인 중인 항목 (null이면 확인 모달이 닫혀있음)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   function toggle(id: string) {
     setAllergenDraft((prev) =>
@@ -2308,11 +2380,12 @@ function AllergenPickerRow({
     );
   }
 
-  // 입력한 텍스트를 새 알레르기 항목으로 확정해서 목록 뒤에 추가합니다.
+  // 입력한 텍스트를 공유 알레르기 목록에 추가하고, 지금 편집 중인 칸에도 바로 선택 처리합니다.
   function commitCustom() {
     const text = customText.trim();
-    if (text && !allergenDraft.includes(text)) {
-      setAllergenDraft((prev) => [...prev, text]);
+    if (text) {
+      onAddCustomAllergen(text);
+      setAllergenDraft((prev) => (prev.includes(text) ? prev : [...prev, text]));
     }
     setCustomText("");
     setAddingCustom(false);
@@ -2328,10 +2401,23 @@ function AllergenPickerRow({
     }
   }
 
-  // 법정 19개 목록에는 없지만 이미 선택되어 있는 항목(직접 추가한 것)도 칩으로 보여줘야
-  // 다시 눌러서 해제할 수 있습니다.
-  const customEntries = allergenDraft.filter(
-    (id) => !ALLERGENS.some((a) => a.id === id)
+  function handleCustomContextMenu(e: ReactMouseEvent<HTMLButtonElement>, label: string) {
+    e.preventDefault();
+    setDeleteTarget(label);
+  }
+
+  function confirmDelete() {
+    if (deleteTarget) {
+      onDeleteCustomAllergen(deleteTarget);
+      setAllergenDraft((prev) => prev.filter((x) => x !== deleteTarget));
+    }
+    setDeleteTarget(null);
+  }
+
+  // 예전 데이터 등으로 공유 목록/법정 목록 어디에도 없지만 이 칸에는 이미 선택되어 있는
+  // 항목(고아 항목)도 보여줘야 다시 눌러서 해제할 수 있습니다.
+  const orphanEntries = allergenDraft.filter(
+    (id) => !ALLERGENS.some((a) => a.id === id) && !customAllergens.includes(id)
   );
 
   return (
@@ -2349,7 +2435,22 @@ function AllergenPickerRow({
           </button>
         );
       })}
-      {customEntries.map((id) => (
+      {customAllergens.map((label) => {
+        const active = allergenDraft.includes(label);
+        return (
+          <button
+            key={label}
+            type="button"
+            onClick={() => toggle(label)}
+            onContextMenu={(e) => handleCustomContextMenu(e, label)}
+            title="우클릭하면 삭제할 수 있어요"
+            style={allergenChipStyle(active)}
+          >
+            ⚠️ {label}
+          </button>
+        );
+      })}
+      {orphanEntries.map((id) => (
         <button
           key={id}
           type="button"
@@ -2367,6 +2468,7 @@ function AllergenPickerRow({
           onKeyDown={handleCustomKeyDown}
           onBlur={commitCustom}
           placeholder="알레르기 이름"
+          maxLength={20}
           style={allergenCustomInputStyle}
         />
       ) : (
@@ -2377,6 +2479,24 @@ function AllergenPickerRow({
         >
           + 추가
         </button>
+      )}
+      {deleteTarget && (
+        <div style={modalOverlayStyle} onClick={() => setDeleteTarget(null)}>
+          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
+            <p style={modalTitleStyle}>알레르기 항목 삭제</p>
+            <p style={modalMessageStyle}>
+              {`"${deleteTarget}"을(를) 목록에서 삭제할까요?\n모든 사용자의 알레르기 선택 목록에서 사라져요.`}
+            </p>
+            <div style={modalActionsStyle}>
+              <button style={modalCancelBtnStyle} onClick={() => setDeleteTarget(null)}>
+                취소
+              </button>
+              <button style={modalConfirmBtnStyle} onClick={confirmDelete}>
+                삭제
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
