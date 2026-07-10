@@ -2042,7 +2042,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
               if (list.length === 0) {
                 return (
                   <p style={{ ...modalMessageStyle, marginTop: 8 }}>
-                    이번 주엔 별로예요나 코멘트가 없어요.
+                    이번 주엔 코멘트가 없어요.
                   </p>
                 );
               }
