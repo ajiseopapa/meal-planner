@@ -172,6 +172,14 @@ type FeedbackCounts = { good?: number; bad?: number; leftover?: number; comments
 type UserFeedbackState = { rating?: "good" | "bad"; leftover?: boolean };
 const FEEDBACK_STORAGE_KEY = "mealPlanner.myFeedback.v1";
 
+// ── 최근 등록한 메뉴 재사용(즐겨찾기 느낌) ──
+// 카테고리(밥/국/반찬A 등)별로 최근에 저장했던 메뉴명 + 영양정보 + 알레르기 정보를
+// 이 브라우저(관리자 기기)의 localStorage에 최대 8개까지 기억해두고,
+// 편집 칸에서 칩을 눌러 바로 채워 넣을 수 있게 합니다. 서버 저장과는 무관한 입력 편의 기능입니다.
+type RecentMenuEntry = { name: string; nutrition: Nutrition; allergens: string[] };
+const RECENT_MENUS_STORAGE_KEY = "mealPlanner.recentMenus.v1";
+const RECENT_MENUS_MAX = 8;
+
 async function sendFeedback(input: {
   key: string;
   date: Date;
@@ -291,6 +299,46 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       // localStorage를 못 읽어도(시크릿 모드 등) 기능이 죽지 않도록 조용히 무시합니다.
     }
   }, []);
+
+  // 카테고리별 "최근 등록한 메뉴" 목록 (관리자 기기의 localStorage에 저장)
+  const [recentMenus, setRecentMenus] = useState<Record<string, RecentMenuEntry[]>>({});
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(RECENT_MENUS_STORAGE_KEY);
+      if (raw) setRecentMenus(JSON.parse(raw));
+    } catch {
+      // 조용히 무시 (localStorage 접근 불가 환경 대비)
+    }
+  }, []);
+
+  // 저장 시점에 호출: 해당 카테고리의 "최근 메뉴" 목록 맨 앞에 추가(중복 이름은 제거) 후
+  // 최대 개수만큼만 남겨서 localStorage에 반영합니다.
+  function addRecentMenu(category: string, entry: RecentMenuEntry) {
+    setRecentMenus((prev) => {
+      const existing = prev[category] ?? [];
+      const withoutDup = existing.filter((m) => m.name !== entry.name);
+      const next = [entry, ...withoutDup].slice(0, RECENT_MENUS_MAX);
+      const updated = { ...prev, [category]: next };
+      try {
+        window.localStorage.setItem(RECENT_MENUS_STORAGE_KEY, JSON.stringify(updated));
+      } catch {
+        // 조용히 무시
+      }
+      return updated;
+    });
+  }
+
+  // 최근 메뉴 칩을 클릭했을 때: 현재 편집 중인 draft/영양정보/알레르기 값을 그대로 채워 넣습니다.
+  // (바로 저장하지 않고 채우기만 해서, 필요하면 admin이 값을 조정한 뒤 저장을 누를 수 있습니다.)
+  function applyRecentMenu(entry: RecentMenuEntry) {
+    setDraft(entry.name);
+    setNutritionDraft({
+      kcal: entry.nutrition.kcal !== undefined ? String(entry.nutrition.kcal) : "",
+      protein: entry.nutrition.protein !== undefined ? String(entry.nutrition.protein) : "",
+      sodium: entry.nutrition.sodium !== undefined ? String(entry.nutrition.sodium) : "",
+    });
+    setAllergenDraft(entry.allergens);
+  }
 
   // 예쁜 알림 모달 상태 + 컴포넌트 바깥 함수도 쓸 수 있도록 전역 등록
   const [notice, setNotice] = useState<{ message: string; variant: NoticeVariant } | null>(null);
@@ -532,6 +580,29 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     setData((prev) => ({ ...prev, [key]: serialized }));
     setEditingKey(null);
     void persistMealDoc(key, selectedDate, selectedDiet, mealType, category, serialized);
+
+    // 저장한 메뉴를 "최근 등록한 메뉴"에 기억해두어 다음에 같은 칸/비슷한 칸에서 재사용할 수 있게 합니다.
+    const trimmedName = draft.trim();
+    if (trimmedName) {
+      addRecentMenu(category, {
+        name: trimmedName,
+        nutrition: {
+          kcal:
+            nutritionDraft.kcal.trim() !== "" && !Number.isNaN(Number(nutritionDraft.kcal))
+              ? Number(nutritionDraft.kcal)
+              : undefined,
+          protein:
+            nutritionDraft.protein.trim() !== "" && !Number.isNaN(Number(nutritionDraft.protein))
+              ? Number(nutritionDraft.protein)
+              : undefined,
+          sodium:
+            nutritionDraft.sodium.trim() !== "" && !Number.isNaN(Number(nutritionDraft.sodium))
+              ? Number(nutritionDraft.sodium)
+              : undefined,
+        },
+        allergens: allergenDraft,
+      });
+    }
   }
 
   async function handleLogin(e: React.FormEvent) {
@@ -1520,6 +1591,10 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                             boxSizing: "border-box",
                           }}
                         />
+                        <RecentMenuChipsRow
+                          entries={recentMenus[category] ?? []}
+                          onPick={applyRecentMenu}
+                        />
                         <NutritionInputsRow
                           nutritionDraft={nutritionDraft}
                           setNutritionDraft={setNutritionDraft}
@@ -1628,6 +1703,10 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                               boxSizing: "border-box",
                               textAlign: "right",
                             }}
+                          />
+                          <RecentMenuChipsRow
+                            entries={recentMenus[category] ?? []}
+                            onPick={applyRecentMenu}
                           />
                           <NutritionInputsRow
                             nutritionDraft={nutritionDraft}
@@ -1959,6 +2038,32 @@ function AllergenPickerRow({
   );
 }
 
+// 편집 중인 칸 위에 "최근 등록한 메뉴"를 칩 형태로 보여주고, 클릭하면 draft에 채워 넣습니다.
+function RecentMenuChipsRow({
+  entries,
+  onPick,
+}: {
+  entries: RecentMenuEntry[];
+  onPick: (entry: RecentMenuEntry) => void;
+}) {
+  if (entries.length === 0) return null;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "2px 0" }}>
+      {entries.map((entry) => (
+        <button
+          key={entry.name}
+          type="button"
+          onClick={() => onPick(entry)}
+          style={recentMenuChipStyle}
+          title="클릭하면 이 메뉴로 채워집니다"
+        >
+          🕘 {entry.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function GearIcon({ active }: { active?: boolean }) {
   return (
     <svg
@@ -2241,6 +2346,17 @@ function allergenChipStyle(active: boolean): CSSProperties {
     whiteSpace: "nowrap",
   };
 }
+
+const recentMenuChipStyle: CSSProperties = {
+  fontSize: 11,
+  padding: "3px 7px",
+  borderRadius: 999,
+  border: "1px solid #d7dbe3",
+  background: "#f7f8fa",
+  color: "#4a5568",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
 
 function feedbackBtnStyle(active: boolean): CSSProperties {
   return {
