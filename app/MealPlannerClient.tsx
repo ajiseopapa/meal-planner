@@ -392,6 +392,16 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       globalNotify = null;
     };
   }, []);
+
+  // "별로예요" 클릭 시 코멘트를 남길 수 있는 예쁜 모달 상태
+  // (기존에는 window.prompt로 물어봤는데, 디자인이 안 예뻐서 커스텀 모달로 교체)
+  const [badFeedbackModal, setBadFeedbackModal] = useState<null | {
+    key: string;
+    mealType: string;
+    category: string;
+    current?: "good" | "bad";
+  }>(null);
+  const [badFeedbackComment, setBadFeedbackComment] = useState("");
   // 알림 모달도 Esc 키로 닫을 수 있게 합니다.
   useEffect(() => {
     if (!notice) return;
@@ -412,6 +422,17 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deleteModal, deleteLoading]);
+
+  // "별로예요" 코멘트 모달도 Esc 키로 닫을 수 있게 합니다.
+  useEffect(() => {
+    if (!badFeedbackModal) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") closeBadFeedbackModal();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [badFeedbackModal]);
 
   // Firestore 실시간 구독: 현재 보고 있는 주간(월~일) 범위만 구독
   const [syncing, setSyncing] = useState(true);
@@ -563,15 +584,36 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       persistUserFeedback({ ...userFeedback, [key]: { ...userFeedback[key], rating: undefined } });
       return;
     }
-    let comment: string | undefined;
-    if (rating === "bad" && typeof window !== "undefined") {
-      comment = window.prompt("어떤 점이 별로였는지 간단히 남겨주시겠어요? (선택 사항)") ?? undefined;
+    if (rating === "bad") {
+      // "별로예요"는 코멘트를 남길 수 있는 모달을 먼저 띄우고, 확인/건너뛰기를 누르면 실제로 반영합니다.
+      setBadFeedbackComment("");
+      setBadFeedbackModal({ key, mealType, category, current });
+      return;
     }
     if (current) {
       void sendFeedback({ key, date: selectedDate, diet: selectedDiet, mealType, category, kind: current, delta: -1 });
     }
-    void sendFeedback({ key, date: selectedDate, diet: selectedDiet, mealType, category, kind: rating, delta: 1, comment });
+    void sendFeedback({ key, date: selectedDate, diet: selectedDiet, mealType, category, kind: rating, delta: 1 });
     persistUserFeedback({ ...userFeedback, [key]: { ...userFeedback[key], rating } });
+  }
+
+  // "별로예요" 모달에서 등록을 누르면: 이전 평가가 있었다면 취소하고, "별로" + (선택) 코멘트를 반영합니다.
+  function confirmBadFeedback() {
+    if (!badFeedbackModal) return;
+    const { key, mealType, category, current } = badFeedbackModal;
+    const comment = badFeedbackComment.trim() || undefined;
+    if (current) {
+      void sendFeedback({ key, date: selectedDate, diet: selectedDiet, mealType, category, kind: current, delta: -1 });
+    }
+    void sendFeedback({ key, date: selectedDate, diet: selectedDiet, mealType, category, kind: "bad", delta: 1, comment });
+    persistUserFeedback({ ...userFeedback, [key]: { ...userFeedback[key], rating: "bad" } });
+    setBadFeedbackModal(null);
+    setBadFeedbackComment("");
+  }
+
+  function closeBadFeedbackModal() {
+    setBadFeedbackModal(null);
+    setBadFeedbackComment("");
   }
 
   // 잔반 체크는 좋아요/별로예요와 독립적인 토글입니다.
@@ -1901,6 +1943,52 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </div>
       )}
+
+      {badFeedbackModal && (
+        <div
+          className="delete-modal-overlay"
+          style={modalOverlayStyle}
+          onClick={closeBadFeedbackModal}
+        >
+          <div
+            className="delete-modal-card"
+            style={modalCardStyle}
+            onClick={(e) => e.stopPropagation()}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="bad-feedback-modal-title"
+          >
+            <div style={badFeedbackIconWrapStyle}>
+              <span style={{ fontSize: 24, lineHeight: 1 }}>🙁</span>
+            </div>
+            <h3 id="bad-feedback-modal-title" style={modalTitleStyle}>
+              어떤 점이 아쉬우셨나요?
+            </h3>
+            <p style={modalMessageStyle}>
+              간단히 남겨주시면 다음 식단에 참고할게요.{"\n"}(선택 사항이에요)
+            </p>
+            <textarea
+              autoFocus
+              value={badFeedbackComment}
+              onChange={(e) => setBadFeedbackComment(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) confirmBadFeedback();
+              }}
+              placeholder="예: 너무 짜요, 양이 적어요"
+              rows={3}
+              style={modalTextareaStyle}
+            />
+            <div style={modalActionsStyle}>
+              <button onClick={closeBadFeedbackModal} style={modalCancelBtnStyle}>
+                취소
+              </button>
+              <button onClick={confirmBadFeedback} style={badFeedbackConfirmBtnStyle}>
+                등록
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2511,6 +2599,44 @@ const modalInputStyle: CSSProperties = {
   fontSize: 14,
   textAlign: "center",
   outline: "none",
+};
+
+const modalTextareaStyle: CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  border: "1px solid #d7dbe3",
+  borderRadius: 10,
+  padding: "10px 12px",
+  fontSize: 13.5,
+  lineHeight: 1.5,
+  textAlign: "left",
+  outline: "none",
+  resize: "none",
+  fontFamily: "inherit",
+  marginTop: 6,
+};
+
+const badFeedbackIconWrapStyle: CSSProperties = {
+  width: 52,
+  height: 52,
+  borderRadius: "50%",
+  background: "#fff5f5",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  margin: "0 auto 14px",
+};
+
+const badFeedbackConfirmBtnStyle: CSSProperties = {
+  flex: 1,
+  border: "1px solid #dd6b20",
+  background: "#dd6b20",
+  borderRadius: 10,
+  padding: "11px 0",
+  fontSize: 14,
+  fontWeight: 700,
+  color: "#fff",
+  cursor: "pointer",
 };
 
 const modalActionsStyle: CSSProperties = {
