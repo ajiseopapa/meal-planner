@@ -79,6 +79,8 @@ function buildKey(d: Date, diet: string, mealType: string, category: string) {
 // 아무 정보도 없는 칸(과거 데이터 포함)은 그냥 일반 텍스트 메뉴명 그대로 둡니다.
 type Nutrition = { kcal?: number; protein?: number; sodium?: number };
 type ParsedMeal = { name: string; nutrition: Nutrition; allergens: string[] };
+// 식단 종류별 영양 목표(상한). 값이 있는 항목만 초과 여부를 검사합니다.
+type DietTarget = { kcal?: number; protein?: number; sodium?: number };
 
 // 식품위생법상 표시 대상 알레르기 유발 성분 (식약처 고시 기준, 19개 항목)
 const ALLERGENS: { id: string; label: string; icon: string }[] = [
@@ -455,6 +457,106 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     void persistCustomAllergens(next);
   }
 
+  // ── 식단 종류별 영양 목표(상한) ──
+  // 관리자가 식단별로 kcal/단백질/나트륨 상한 목표를 정해두면, "오늘 영양 합계"에서
+  // 목표를 초과한 항목이 빨간색으로 강조됩니다. customAllergens 컬렉션의
+  // "nutritionTargets" 문서에 통째로 저장(공유), 읽기는 다른 설정들과 동일한 onSnapshot 구독,
+  // 쓰기는 관리자 API 라우트(/api/admin/nutrition-targets)를 통해서만 합니다.
+  const [nutritionTargets, setNutritionTargets] = useState<Record<string, DietTarget>>({});
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      doc(db, "customAllergens", "nutritionTargets"),
+      (docSnap) => {
+        const raw = docSnap.data()?.targets;
+        if (!raw || typeof raw !== "object") {
+          setNutritionTargets({});
+          return;
+        }
+        const map: Record<string, DietTarget> = {};
+        for (const [diet, val] of Object.entries(raw as Record<string, unknown>)) {
+          if (!val || typeof val !== "object") continue;
+          const v = val as Record<string, unknown>;
+          const t: DietTarget = {};
+          if (typeof v.kcal === "number") t.kcal = v.kcal;
+          if (typeof v.protein === "number") t.protein = v.protein;
+          if (typeof v.sodium === "number") t.sodium = v.sodium;
+          if (Object.keys(t).length > 0) map[diet] = t;
+        }
+        setNutritionTargets(map);
+      },
+      (err) => {
+        console.error("[nutritionTargets] 구독 에러:", err.code, err.message, err);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  async function persistNutritionTargets(next: Record<string, DietTarget>) {
+    try {
+      const res = await fetch("/api/admin/nutrition-targets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets: next }),
+      });
+      if (!res.ok) {
+        console.error("[nutritionTargets] 저장 실패", await res.text().catch(() => ""));
+        notify("영양 목표 저장에 실패했습니다. 다시 시도해주세요.", "error");
+      }
+    } catch (err) {
+      console.error("[nutritionTargets] 저장 실패", err);
+      notify("영양 목표 저장에 실패했습니다. 다시 시도해주세요.", "error");
+    }
+  }
+
+  // 목표 설정 모달 상태 + 편집용 초안(문자열 입력값 보관, 저장 시 숫자로 변환)
+  const [showTargetModal, setShowTargetModal] = useState(false);
+  const [targetDraft, setTargetDraft] = useState<
+    Record<string, { kcal: string; protein: string; sodium: string }>
+  >({});
+
+  function openTargetModal() {
+    const draft: Record<string, { kcal: string; protein: string; sodium: string }> = {};
+    for (const diet of DIET_TYPES) {
+      const t = nutritionTargets[diet] ?? {};
+      draft[diet] = {
+        kcal: t.kcal !== undefined ? String(t.kcal) : "",
+        protein: t.protein !== undefined ? String(t.protein) : "",
+        sodium: t.sodium !== undefined ? String(t.sodium) : "",
+      };
+    }
+    setTargetDraft(draft);
+    setShowTargetModal(true);
+  }
+
+  function updateTargetDraft(
+    diet: string,
+    field: "kcal" | "protein" | "sodium",
+    value: string
+  ) {
+    setTargetDraft((prev) => ({
+      ...prev,
+      [diet]: { ...(prev[diet] ?? { kcal: "", protein: "", sodium: "" }), [field]: value },
+    }));
+  }
+
+  function saveTargetDraft() {
+    const next: Record<string, DietTarget> = {};
+    for (const diet of DIET_TYPES) {
+      const d = targetDraft[diet] ?? { kcal: "", protein: "", sodium: "" };
+      const t: DietTarget = {};
+      const kcal = Number(d.kcal);
+      if (d.kcal.trim() !== "" && !Number.isNaN(kcal) && kcal >= 0) t.kcal = kcal;
+      const protein = Number(d.protein);
+      if (d.protein.trim() !== "" && !Number.isNaN(protein) && protein >= 0) t.protein = protein;
+      const sodium = Number(d.sodium);
+      if (d.sodium.trim() !== "" && !Number.isNaN(sodium) && sodium >= 0) t.sodium = sodium;
+      if (Object.keys(t).length > 0) next[diet] = t;
+    }
+    setNutritionTargets(next);
+    void persistNutritionTargets(next);
+    setShowTargetModal(false);
+  }
+
   // 예쁜 알림 모달 상태 + 컴포넌트 바깥 함수도 쓸 수 있도록 전역 등록
   const [notice, setNotice] = useState<{ message: string; variant: NoticeVariant } | null>(null);
   useEffect(() => {
@@ -524,6 +626,16 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [showCopyConfirm]);
+
+  // "영양 목표 설정" 모달도 Esc 키로 닫을 수 있게 합니다.
+  useEffect(() => {
+    if (!showTargetModal) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowTargetModal(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showTargetModal]);
 
   // Firestore 실시간 구독: 현재 보고 있는 주간(월~일) 범위만 구독
   const [syncing, setSyncing] = useState(true);
@@ -1659,6 +1771,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           <button onClick={() => setShowFeedbackPanel(true)} style={toolbarBtnStyle}>
             피드백 모아보기
           </button>
+          <button onClick={openTargetModal} style={toolbarBtnStyle}>
+            영양 목표 설정
+          </button>
           {!bulkMode ? (
             <button onClick={enterBulkMode} style={toolbarBtnStyle}>
               빈칸 일괄 입력
@@ -2044,14 +2159,74 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       {/* 오늘(선택된 날짜 + 식단 종류) 영양 합계 — 표/모바일 리스트 공통으로 아래에 표시 */}
       {(() => {
         const { day, perMeal } = computeNutritionTotals();
+        const target = nutritionTargets[selectedDiet] ?? {};
+        const kcalOver = target.kcal !== undefined && day.kcal > target.kcal;
+        const proteinOver = target.protein !== undefined && day.protein > target.protein;
+        const sodiumOver = target.sodium !== undefined && day.sodium > target.sodium;
+        const anyOver = kcalOver || proteinOver || sodiumOver;
+        const hasAnyTarget =
+          target.kcal !== undefined ||
+          target.protein !== undefined ||
+          target.sodium !== undefined;
+
+        // 값 + 라벨 + (있으면) 목표/초과 표시를 한 칸으로 렌더링
+        const renderStat = (
+          value: number,
+          label: string,
+          tgt: number | undefined,
+          over: boolean
+        ) => (
+          <div style={nutritionStatStyle}>
+            <div style={{ ...nutritionStatValueStyle, color: over ? "#e53e3e" : "#2b6cb0" }}>
+              {formatNumber(value)}
+            </div>
+            <div style={nutritionStatLabelStyle}>{label}</div>
+            {tgt !== undefined && (
+              <div
+                style={{
+                  fontSize: 10.5,
+                  marginTop: 3,
+                  fontWeight: over ? 700 : 400,
+                  color: over ? "#e53e3e" : "#a0aec0",
+                }}
+              >
+                {over ? `⚠ 목표 ${formatNumber(tgt)} 초과` : `목표 ${formatNumber(tgt)}`}
+              </div>
+            )}
+          </div>
+        );
+
         return (
-          <div style={nutritionSummaryCardStyle}>
+          <div
+            style={{
+              ...nutritionSummaryCardStyle,
+              border: anyOver ? "1px solid #feb2b2" : "1px solid #e2e5ea",
+              background: anyOver ? "#fff8f8" : "#f9fbfd",
+            }}
+          >
             <div style={nutritionSummaryHeaderStyle}>
               <span style={{ fontWeight: 700, color: "#1f2430", fontSize: 15 }}>
                 오늘 영양 합계
               </span>
-              <span style={{ fontSize: 12, color: "#8a93a3" }}>
-                {formatDate(selectedDate)} · {selectedDiet}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                {anyOver && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: "#e53e3e",
+                      background: "#fff0f0",
+                      border: "1px solid #feb2b2",
+                      borderRadius: 999,
+                      padding: "2px 8px",
+                    }}
+                  >
+                    ⚠ 목표 초과
+                  </span>
+                )}
+                <span style={{ fontSize: 12, color: "#8a93a3" }}>
+                  {formatDate(selectedDate)} · {selectedDiet}
+                </span>
               </span>
             </div>
 
@@ -2063,20 +2238,11 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             ) : (
               <>
                 <div style={nutritionTotalRowStyle}>
-                  <div style={nutritionStatStyle}>
-                    <div style={nutritionStatValueStyle}>{formatNumber(day.kcal)}</div>
-                    <div style={nutritionStatLabelStyle}>kcal</div>
-                  </div>
+                  {renderStat(day.kcal, "kcal", target.kcal, kcalOver)}
                   <div style={nutritionStatDividerStyle} />
-                  <div style={nutritionStatStyle}>
-                    <div style={nutritionStatValueStyle}>{formatNumber(day.protein)}</div>
-                    <div style={nutritionStatLabelStyle}>단백질 (g)</div>
-                  </div>
+                  {renderStat(day.protein, "단백질 (g)", target.protein, proteinOver)}
                   <div style={nutritionStatDividerStyle} />
-                  <div style={nutritionStatStyle}>
-                    <div style={nutritionStatValueStyle}>{formatNumber(day.sodium)}</div>
-                    <div style={nutritionStatLabelStyle}>나트륨 (mg)</div>
-                  </div>
+                  {renderStat(day.sodium, "나트륨 (mg)", target.sodium, sodiumOver)}
                 </div>
 
                 {/* 끼니별 세부 합계 — 영양 정보가 하나라도 있는 끼니만 표시 */}
@@ -2099,6 +2265,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
                 <p style={{ margin: "10px 0 0", fontSize: 11, color: "#a0aec0" }}>
                   * 영양 정보가 입력된 메뉴만 합산한 참고 수치입니다.
+                  {!hasAnyTarget && isAdmin
+                    ? " 상단 '영양 목표 설정'에서 식단별 상한을 정하면 초과 시 빨간색으로 표시됩니다."
+                    : ""}
                 </p>
               </>
             )}
@@ -2213,6 +2382,100 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             </div>
           );
         })()}
+
+      {showTargetModal && (
+        <div
+          className="delete-modal-overlay"
+          style={modalOverlayStyle}
+          onClick={() => setShowTargetModal(false)}
+        >
+          <div
+            style={feedbackPanelCardStyle}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="target-modal-title"
+          >
+            <h3 id="target-modal-title" style={modalTitleStyle}>
+              식단별 영양 목표 설정
+            </h3>
+            <p style={{ ...modalMessageStyle, marginTop: 6 }}>
+              {
+                "각 식단의 하루 상한 목표를 입력하세요. 합계가 목표를 넘으면 '오늘 영양 합계'에서 빨간색으로 표시됩니다.\n비워두면 그 항목은 검사하지 않습니다. (병원 영양팀 기준에 맞춰 입력)"
+              }
+            </p>
+            <div style={{ marginTop: 14, overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={targetThStyle}>식단</th>
+                    <th style={targetThStyle}>kcal</th>
+                    <th style={targetThStyle}>단백질(g)</th>
+                    <th style={targetThStyle}>나트륨(mg)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {DIET_TYPES.map((diet) => {
+                    const d = targetDraft[diet] ?? { kcal: "", protein: "", sodium: "" };
+                    return (
+                      <tr key={diet}>
+                        <td
+                          style={{
+                            ...targetTdStyle,
+                            fontWeight: 600,
+                            textAlign: "left",
+                            background: "#f7f8fa",
+                          }}
+                        >
+                          {diet}
+                        </td>
+                        <td style={targetTdStyle}>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            value={d.kcal}
+                            placeholder="—"
+                            onChange={(e) => updateTargetDraft(diet, "kcal", e.target.value)}
+                            style={targetInputStyle}
+                          />
+                        </td>
+                        <td style={targetTdStyle}>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            value={d.protein}
+                            placeholder="—"
+                            onChange={(e) => updateTargetDraft(diet, "protein", e.target.value)}
+                            style={targetInputStyle}
+                          />
+                        </td>
+                        <td style={targetTdStyle}>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            value={d.sodium}
+                            placeholder="—"
+                            onChange={(e) => updateTargetDraft(diet, "sodium", e.target.value)}
+                            style={targetInputStyle}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={modalActionsStyle}>
+              <button onClick={() => setShowTargetModal(false)} style={modalCancelBtnStyle}>
+                취소
+              </button>
+              <button onClick={saveTargetDraft} style={copyModalConfirmBtnStyle}>
+                저장
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {notice && (
         <div
@@ -3320,6 +3583,34 @@ const copyModalConfirmBtnStyle: CSSProperties = {
   fontWeight: 700,
   color: "#fff",
   cursor: "pointer",
+};
+
+const targetThStyle: CSSProperties = {
+  border: "1px solid #e2e5ea",
+  padding: "8px 6px",
+  background: "#f0f2f5",
+  fontWeight: 600,
+  fontSize: 12.5,
+  color: "#4a5568",
+  whiteSpace: "nowrap",
+};
+
+const targetTdStyle: CSSProperties = {
+  border: "1px solid #e2e5ea",
+  padding: "6px",
+  textAlign: "center",
+};
+
+const targetInputStyle: CSSProperties = {
+  width: "100%",
+  minWidth: 60,
+  padding: "6px 6px",
+  border: "1px solid #d7dbe3",
+  borderRadius: 6,
+  fontSize: 13,
+  textAlign: "center",
+  boxSizing: "border-box",
+  outline: "none",
 };
 
 function noticeIconWrapStyle(variant: NoticeVariant): CSSProperties {
