@@ -274,6 +274,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
   // 삭제 메뉴(하루/이번주/전체) 열림 상태
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
 
+  // "이번 주 → 다음 주 복사" 확인 모달 열림 상태
+  const [showCopyConfirm, setShowCopyConfirm] = useState(false);
+
   // 관리자용 "피드백 모아보기" 패널: 이번 주(현재 구독 중인 주간) 범위에서
   // 별로예요가 있거나 코멘트가 달린 항목만 모아서 한눈에 보여줍니다.
   const [showFeedbackPanel, setShowFeedbackPanel] = useState(false);
@@ -503,6 +506,16 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [showFeedbackPanel]);
+
+  // "이번 주 → 다음 주 복사" 확인 모달도 Esc 키로 닫을 수 있게 합니다.
+  useEffect(() => {
+    if (!showCopyConfirm) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowCopyConfirm(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showCopyConfirm]);
 
   // Firestore 실시간 구독: 현재 보고 있는 주간(월~일) 범위만 구독
   const [syncing, setSyncing] = useState(true);
@@ -866,19 +879,15 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
+  // 브라우저 기본 confirm 대신, 앱 공통 스타일의 예쁜 확인 모달을 엽니다.
   function handleCopyWeek() {
-    const nextWeekStart = new Date(weekStart);
-    nextWeekStart.setDate(weekStart.getDate() + 7);
-    const nextWeekEnd = new Date(nextWeekStart);
-    nextWeekEnd.setDate(nextWeekStart.getDate() + 6);
+    setShowCopyConfirm(true);
+  }
 
-    const ok = window.confirm(
-      `이번 주(${formatDate(weekStart)} ~ ${formatDate(weekEnd)}) 식단을 다음 주(${formatDate(
-        nextWeekStart
-      )} ~ ${formatDate(nextWeekEnd)})로 그대로 복사할까요?\n다음 주에 이미 등록된 메뉴는 덮어씌워집니다.`
-    );
-    if (!ok) return;
+  // 복사 확인 모달에서 "복사"를 눌렀을 때 실제 복사를 실행하고 모달을 닫습니다.
+  function confirmCopyWeek() {
     copyWeekToNextWeek();
+    setShowCopyConfirm(false);
   }
 
   // 삭제 확인 모달을 닫습니다 (삭제 진행 중에는 닫지 않음).
@@ -2051,6 +2060,50 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
           );
         })()}
 
+      {showCopyConfirm &&
+        (() => {
+          const nextWeekStart = new Date(weekStart);
+          nextWeekStart.setDate(weekStart.getDate() + 7);
+          const nextWeekEnd = new Date(nextWeekStart);
+          nextWeekEnd.setDate(nextWeekStart.getDate() + 6);
+          return (
+            <div
+              className="delete-modal-overlay"
+              style={modalOverlayStyle}
+              onClick={() => setShowCopyConfirm(false)}
+            >
+              <div
+                className="delete-modal-card"
+                style={modalCardStyle}
+                onClick={(e) => e.stopPropagation()}
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="copy-modal-title"
+              >
+                <div style={copyModalIconWrapStyle}>
+                  <CopyIcon />
+                </div>
+                <h3 id="copy-modal-title" style={modalTitleStyle}>
+                  이번 주 식단 복사
+                </h3>
+                <p style={modalMessageStyle}>
+                  {`이번 주(${formatDate(weekStart)} ~ ${formatDate(weekEnd)}) 식단을\n다음 주(${formatDate(
+                    nextWeekStart
+                  )} ~ ${formatDate(nextWeekEnd)})로 그대로 복사할까요?\n다음 주에 이미 등록된 메뉴는 덮어씌워집니다.`}
+                </p>
+                <div style={modalActionsStyle}>
+                  <button onClick={() => setShowCopyConfirm(false)} style={modalCancelBtnStyle}>
+                    취소
+                  </button>
+                  <button onClick={confirmCopyWeek} style={copyModalConfirmBtnStyle}>
+                    복사
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
       {notice && (
         <div
           className="delete-modal-overlay"
@@ -2593,6 +2646,24 @@ function TrashIcon() {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#2b6cb0"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
 function gearBtnStyle(active: boolean): CSSProperties {
   return {
     width: 36,
@@ -3049,6 +3120,29 @@ const modalConfirmBtnStyle: CSSProperties = {
   fontSize: 14,
   fontWeight: 700,
   color: "#fff",
+};
+
+const copyModalIconWrapStyle: CSSProperties = {
+  width: 52,
+  height: 52,
+  borderRadius: "50%",
+  background: "#eef6ff",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  margin: "0 auto 14px",
+};
+
+const copyModalConfirmBtnStyle: CSSProperties = {
+  flex: 1,
+  border: "1px solid #2b6cb0",
+  background: "#2b6cb0",
+  borderRadius: 10,
+  padding: "11px 0",
+  fontSize: 14,
+  fontWeight: 700,
+  color: "#fff",
+  cursor: "pointer",
 };
 
 function noticeIconWrapStyle(variant: NoticeVariant): CSSProperties {
