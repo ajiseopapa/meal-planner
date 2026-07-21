@@ -157,6 +157,14 @@ function formatNutritionLine(nutrition: Nutrition): string {
   return parts.join(" · ");
 }
 
+// 합계 표시용: 정수는 그대로, 소수는 최대 1자리까지 + 천 단위 콤마
+function formatNumber(n: number): string {
+  const rounded = Math.round(n * 10) / 10;
+  return Number.isInteger(rounded)
+    ? rounded.toLocaleString("ko-KR")
+    : rounded.toLocaleString("ko-KR", { maximumFractionDigits: 1 });
+}
+
 type MealUpdate = {
   key: string;
   date: Date;
@@ -643,6 +651,43 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
 
   function cellKey(mealType: string, category: string) {
     return buildKey(selectedDate, selectedDiet, mealType, category);
+  }
+
+  // 현재 보고 있는 날짜 + 식단 종류 기준으로, 끼니별/하루 전체의 영양 합계를 계산합니다.
+  // (영양 정보가 입력된 칸만 더합니다. 입력 안 된 칸은 합계에서 빠지므로 참고용 수치입니다.)
+  function computeNutritionTotals() {
+    const day = { kcal: 0, protein: 0, sodium: 0, count: 0 };
+    const perMeal: Record<
+      string,
+      { kcal: number; protein: number; sodium: number; count: number }
+    > = {};
+    for (const mealType of MEAL_TYPES) {
+      const m = { kcal: 0, protein: 0, sodium: 0, count: 0 };
+      for (const category of CATEGORIES) {
+        const { nutrition } = parseMealValue(data[cellKey(mealType, category)]);
+        const has =
+          nutrition.kcal !== undefined ||
+          nutrition.protein !== undefined ||
+          nutrition.sodium !== undefined;
+        if (!has) continue;
+        if (nutrition.kcal !== undefined) {
+          m.kcal += nutrition.kcal;
+          day.kcal += nutrition.kcal;
+        }
+        if (nutrition.protein !== undefined) {
+          m.protein += nutrition.protein;
+          day.protein += nutrition.protein;
+        }
+        if (nutrition.sodium !== undefined) {
+          m.sodium += nutrition.sodium;
+          day.sodium += nutrition.sodium;
+        }
+        m.count += 1;
+        day.count += 1;
+      }
+      perMeal[mealType] = m;
+    }
+    return { day, perMeal };
   }
 
   function persistUserFeedback(next: Record<string, UserFeedbackState>) {
@@ -1996,6 +2041,71 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
         ))}
       </div>
 
+      {/* 오늘(선택된 날짜 + 식단 종류) 영양 합계 — 표/모바일 리스트 공통으로 아래에 표시 */}
+      {(() => {
+        const { day, perMeal } = computeNutritionTotals();
+        return (
+          <div style={nutritionSummaryCardStyle}>
+            <div style={nutritionSummaryHeaderStyle}>
+              <span style={{ fontWeight: 700, color: "#1f2430", fontSize: 15 }}>
+                오늘 영양 합계
+              </span>
+              <span style={{ fontSize: 12, color: "#8a93a3" }}>
+                {formatDate(selectedDate)} · {selectedDiet}
+              </span>
+            </div>
+
+            {day.count === 0 ? (
+              <p style={{ margin: "10px 0 0", fontSize: 13, color: "#8a93a3" }}>
+                영양 정보가 입력된 메뉴가 아직 없어요. 메뉴 편집 시 kcal·단백질·나트륨을
+                입력하면 여기에 합산됩니다.
+              </p>
+            ) : (
+              <>
+                <div style={nutritionTotalRowStyle}>
+                  <div style={nutritionStatStyle}>
+                    <div style={nutritionStatValueStyle}>{formatNumber(day.kcal)}</div>
+                    <div style={nutritionStatLabelStyle}>kcal</div>
+                  </div>
+                  <div style={nutritionStatDividerStyle} />
+                  <div style={nutritionStatStyle}>
+                    <div style={nutritionStatValueStyle}>{formatNumber(day.protein)}</div>
+                    <div style={nutritionStatLabelStyle}>단백질 (g)</div>
+                  </div>
+                  <div style={nutritionStatDividerStyle} />
+                  <div style={nutritionStatStyle}>
+                    <div style={nutritionStatValueStyle}>{formatNumber(day.sodium)}</div>
+                    <div style={nutritionStatLabelStyle}>나트륨 (mg)</div>
+                  </div>
+                </div>
+
+                {/* 끼니별 세부 합계 — 영양 정보가 하나라도 있는 끼니만 표시 */}
+                <div style={perMealWrapStyle}>
+                  {MEAL_TYPES.map((mealType) => {
+                    const m = perMeal[mealType];
+                    if (!m || m.count === 0) return null;
+                    const parts: string[] = [];
+                    if (m.kcal) parts.push(`${formatNumber(m.kcal)}kcal`);
+                    if (m.protein) parts.push(`단백질 ${formatNumber(m.protein)}g`);
+                    if (m.sodium) parts.push(`나트륨 ${formatNumber(m.sodium)}mg`);
+                    return (
+                      <div key={mealType} style={perMealItemStyle}>
+                        <span style={{ fontWeight: 600, color: "#4a5568" }}>{mealType}</span>
+                        <span style={{ color: "#8a93a3" }}>{parts.join(" · ")}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <p style={{ margin: "10px 0 0", fontSize: 11, color: "#a0aec0" }}>
+                  * 영양 정보가 입력된 메뉴만 합산한 참고 수치입니다.
+                </p>
+              </>
+            )}
+          </div>
+        );
+      })()}
+
       {deleteModal &&
         (() => {
           const content = getDeleteModalContent();
@@ -2854,6 +2964,73 @@ const nutritionLineStyle: CSSProperties = {
   color: "#8a93a3",
   marginTop: 2,
   lineHeight: 1.4,
+};
+
+const nutritionSummaryCardStyle: CSSProperties = {
+  marginTop: 20,
+  border: "1px solid #e2e5ea",
+  borderRadius: 12,
+  padding: "16px 18px",
+  background: "#f9fbfd",
+};
+
+const nutritionSummaryHeaderStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "baseline",
+  justifyContent: "space-between",
+  gap: 8,
+  flexWrap: "wrap",
+};
+
+const nutritionTotalRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-around",
+  gap: 8,
+  marginTop: 12,
+};
+
+const nutritionStatStyle: CSSProperties = {
+  flex: 1,
+  textAlign: "center",
+  minWidth: 0,
+};
+
+const nutritionStatValueStyle: CSSProperties = {
+  fontSize: 22,
+  fontWeight: 800,
+  color: "#2b6cb0",
+  letterSpacing: "-0.02em",
+  lineHeight: 1.1,
+};
+
+const nutritionStatLabelStyle: CSSProperties = {
+  fontSize: 11.5,
+  color: "#8a93a3",
+  marginTop: 3,
+};
+
+const nutritionStatDividerStyle: CSSProperties = {
+  width: 1,
+  alignSelf: "stretch",
+  background: "#e2e5ea",
+};
+
+const perMealWrapStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+  marginTop: 14,
+  paddingTop: 12,
+  borderTop: "1px dashed #e2e5ea",
+};
+
+const perMealItemStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  fontSize: 12.5,
 };
 
 const allergenBadgeStyle: CSSProperties = {
