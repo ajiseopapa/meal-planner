@@ -2160,24 +2160,27 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
       {(() => {
         const { day, perMeal } = computeNutritionTotals();
         const target = nutritionTargets[selectedDiet] ?? {};
-        const kcalOver = target.kcal !== undefined && day.kcal > target.kcal;
-        const proteinOver = target.protein !== undefined && day.protein > target.protein;
-        const sodiumOver = target.sodium !== undefined && day.sodium > target.sodium;
-        const anyOver = kcalOver || proteinOver || sodiumOver;
+        // 열량·나트륨은 상한(초과 시 경고), 단백질은 하한(미달 시 경고)
+        const kcalWarn = target.kcal !== undefined && day.kcal > target.kcal;
+        const sodiumWarn = target.sodium !== undefined && day.sodium > target.sodium;
+        const proteinWarn = target.protein !== undefined && day.protein < target.protein;
+        const anyOver = kcalWarn || proteinWarn || sodiumWarn;
         const hasAnyTarget =
           target.kcal !== undefined ||
           target.protein !== undefined ||
           target.sodium !== undefined;
 
-        // 값 + 라벨 + (있으면) 목표/초과 표시를 한 칸으로 렌더링
+        // 값 + 라벨 + (있으면) 목표/경고 표시를 한 칸으로 렌더링
+        // mode "max": 상한(초과 시 경고, "이하" 목표) / "min": 하한(미달 시 경고, "이상" 목표)
         const renderStat = (
           value: number,
           label: string,
           tgt: number | undefined,
-          over: boolean
+          warn: boolean,
+          mode: "max" | "min"
         ) => (
           <div style={nutritionStatStyle}>
-            <div style={{ ...nutritionStatValueStyle, color: over ? "#e53e3e" : "#2b6cb0" }}>
+            <div style={{ ...nutritionStatValueStyle, color: warn ? "#e53e3e" : "#2b6cb0" }}>
               {formatNumber(value)}
             </div>
             <div style={nutritionStatLabelStyle}>{label}</div>
@@ -2186,11 +2189,17 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                 style={{
                   fontSize: 10.5,
                   marginTop: 3,
-                  fontWeight: over ? 700 : 400,
-                  color: over ? "#e53e3e" : "#a0aec0",
+                  fontWeight: warn ? 700 : 400,
+                  color: warn ? "#e53e3e" : "#a0aec0",
                 }}
               >
-                {over ? `⚠ 목표 ${formatNumber(tgt)} 초과` : `목표 ${formatNumber(tgt)}`}
+                {warn
+                  ? mode === "max"
+                    ? `⚠ 목표 ${formatNumber(tgt)} 초과`
+                    : `⚠ 목표 ${formatNumber(tgt)} 미달`
+                  : mode === "max"
+                  ? `목표 ${formatNumber(tgt)} 이하`
+                  : `목표 ${formatNumber(tgt)} 이상`}
               </div>
             )}
           </div>
@@ -2238,11 +2247,11 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             ) : (
               <>
                 <div style={nutritionTotalRowStyle}>
-                  {renderStat(day.kcal, "kcal", target.kcal, kcalOver)}
+                  {renderStat(day.kcal, "kcal", target.kcal, kcalWarn, "max")}
                   <div style={nutritionStatDividerStyle} />
-                  {renderStat(day.protein, "단백질 (g)", target.protein, proteinOver)}
+                  {renderStat(day.protein, "단백질 (g)", target.protein, proteinWarn, "min")}
                   <div style={nutritionStatDividerStyle} />
-                  {renderStat(day.sodium, "나트륨 (mg)", target.sodium, sodiumOver)}
+                  {renderStat(day.sodium, "나트륨 (mg)", target.sodium, sodiumWarn, "max")}
                 </div>
 
                 {/* 끼니별 세부 합계 — 영양 정보가 하나라도 있는 끼니만 표시 */}
@@ -2266,7 +2275,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                 <p style={{ margin: "10px 0 0", fontSize: 11, color: "#a0aec0" }}>
                   * 영양 정보가 입력된 메뉴만 합산한 참고 수치입니다.
                   {!hasAnyTarget && isAdmin
-                    ? " 상단 '영양 목표 설정'에서 식단별 상한을 정하면 초과 시 빨간색으로 표시됩니다."
+                    ? " 상단 '영양 목표 설정'에서 식단별 목표를 정하면 열량·나트륨 초과나 단백질 미달 시 빨간색으로 표시됩니다."
                     : ""}
                 </p>
               </>
@@ -2401,7 +2410,7 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
             </h3>
             <p style={{ ...modalMessageStyle, marginTop: 6 }}>
               {
-                "각 식단의 하루 상한 목표를 입력하세요. 합계가 목표를 넘으면 '오늘 영양 합계'에서 빨간색으로 표시됩니다.\n비워두면 그 항목은 검사하지 않습니다. (병원 영양팀 기준에 맞춰 입력)"
+                "열량·나트륨은 상한(이하), 단백질은 하한(이상) 목표예요. 합계가 열량·나트륨은 넘으면, 단백질은 모자라면 '오늘 영양 합계'에서 빨간색으로 표시됩니다.\n비워두면 그 항목은 검사하지 않습니다. (병원 영양팀 기준에 맞춰 입력)"
               }
             </p>
             <div style={{ marginTop: 14, overflowX: "auto" }}>
@@ -2409,9 +2418,9 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
                 <thead>
                   <tr>
                     <th style={targetThStyle}>식단</th>
-                    <th style={targetThStyle}>kcal</th>
-                    <th style={targetThStyle}>단백질(g)</th>
-                    <th style={targetThStyle}>나트륨(mg)</th>
+                    <th style={targetThStyle}>kcal (이하)</th>
+                    <th style={targetThStyle}>단백질(g) (이상)</th>
+                    <th style={targetThStyle}>나트륨(mg) (이하)</th>
                   </tr>
                 </thead>
                 <tbody>
