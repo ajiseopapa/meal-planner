@@ -1357,8 +1357,12 @@ export default function MealPlannerClient({ isAdmin }: { isAdmin: boolean }) {
     );
   }
 
+  // 관리자는 표에 직접 입력하며 쓰는 화면이라 PC에서 폭을 넓게 쓴다.
+  // 환자·보호자용 읽기 화면은 960px가 읽기 편하므로 그대로 둔다.
+  const containerMaxWidth = isAdmin ? 1360 : 960;
+
   return (
-    <div style={{ maxWidth: 960, margin: "40px auto", padding: "0 16px 140px", width: "100%", boxSizing: "border-box" }}>
+    <div style={{ maxWidth: containerMaxWidth, margin: "40px auto", padding: "0 16px 140px", width: "100%", boxSizing: "border-box" }}>
       <style jsx global>{`
         html, body {
           overflow-x: hidden;

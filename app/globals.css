@@ -3,6 +3,10 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* 앱 전체가 밝은 테마 고정이라 다크모드로 전환하지 않는다.
+     (표·카드 배경색이 인라인 스타일로 흰색 계열 고정이라
+      다크모드에서 글자가 안 보이는 문제가 있었다) */
+  color-scheme: light;
 }
 
 @theme inline {
@@ -10,13 +14,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
